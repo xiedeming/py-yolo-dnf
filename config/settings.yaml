@@ -1,0 +1,231 @@
+# Game Autopilot Configuration
+
+game:
+  window_title: "地下城与勇士：创新世纪"  # 游戏窗口标题，需要修改为实际游戏窗口名
+  target_fps: 30               # 目标帧率
+
+capture:
+  method: "mss"                # 屏幕捕获方法: mss
+  monitor_index: 1             # 显示器索引 (1 = 主显示器)
+
+detection:
+  device: "cuda"               # 推理设备: cuda 或 cpu
+  models:
+    # 主模型配置 - 修改为您的模型路径
+    main:
+      path: "models/best_dxc.pt"   # 您的YOLOv8模型路径
+      conf_threshold: 0.1      # 置信度阈值
+      iou_threshold: 0.1      # IOU阈值
+
+control:
+  humanize: true               # 添加人性化延迟（防检测）
+  mouse_sensitivity: 1.0       # 鼠标灵敏度
+  random_delay_range: [0.02, 0.08]  # 随机延迟范围(秒)
+
+decision:
+  # 状态机配置
+  states:
+    - menu
+    - loading
+    - playing
+    - combat
+    - paused
+    - dead
+    - victory
+
+  # 行为配置
+  combat:
+    attack_key: "space"        # 攻击按键
+    target_priority: "nearest" # 目标优先级: nearest, weakest, strongest
+    skill_strategy: "priority" # 技能策略: priority, cooldown, custom
+    use_skills: true           # 是否使用技能
+
+  items:
+    collect_key: "x"           # 拾取按键
+    auto_collect: true         # 自动拾取
+
+# 横版游戏控制配置
+side_scroller:
+  move_left_key: "left"        # 向左移动按键
+  move_right_key: "right"      # 向右移动按键
+  attack_key: "x"              # 攻击按键
+  attack_range: 150            # 攻击范围(像素)
+  approach_threshold: 150       # 靠近阈值(判断是否在正前方)
+  attack_interval: 0.15        # 攻击间隔(秒)
+
+
+
+# 地图配置
+maps:
+  current: "dungeon_1"         # 当前选择的地图ID
+
+  presets:
+    dungeon_1:
+      name: "暗黑地牢"
+      description: "初级副本"
+      selection:
+        menu_key: "m"
+        icon_position: [150, 150]
+        scroll_count: 0
+        confirm_key: "enter"
+      features:
+        has_boss: true
+        enemy_density: "high"
+        item_density: "medium"
+
+    arena:
+      name: "竞技场"
+      description: "PVP竞技场"
+      selection:
+        menu_key: "m"
+        icon_position: [250, 150]
+        scroll_count: 1
+        confirm_key: "enter"
+      features:
+        has_boss: false
+        enemy_density: "medium"
+        item_density: "low"
+
+debug:
+  enabled: true                # 调试模式
+  show_detections: true        # 显示检测框
+  show_fps: true               # 显示FPS
+  show_state: true             # 显示状态
+  save_screenshots: true      # 保存截图
+  screenshot_interval: 10     # 截图间隔(帧)
+  screenshot_dir: "data/screenshots"
+
+hotkeys:
+  start: "f1"                  # 启动热键
+  pause: "f2"                  # 暂停热键
+  stop: "f3"                   # 停止热键
+
+logging:
+  level: "INFO"                # 日志级别: DEBUG, INFO, WARNING, ERROR
+  log_dir: "logs"
+  console_output: true
+
+# ============ DNF 专用配置 ============
+
+# 副本配置
+dungeon:
+  mode: "new_abyss"           # abyss(深渊), white_map(白图), new_abyss(新深渊)
+  max_runs: 16                # 每个角色最大刷图次数
+  auto_sell: false            # 自动卖装备
+  sell_after_runs: 5          # 刷图多少次后卖装备
+  collect_items: true         # 自动拾取
+  menu_detect_threshold: 180  # menu连续检测次数超过此值触发角色切换
+  character_button_pos: [960, 540]  # 选择角色按钮位置 (x, y)，需要根据实际分辨率调整
+
+# OCR配置 (基于RapidOCR/ONNX Runtime)
+ocr:
+  enabled: true               # 是否启用OCR检测
+  # ONNX模型路径配置（可选，留空使用内置模型）
+  det_model_dir: ""           # 文本检测模型路径
+  rec_model_dir: ""           # 文本识别模型路径
+  cls_model_dir: ""           # 文本方向分类模型路径
+
+# 地图路线配置
+map_routes:
+  dungeon_1:
+    left_doors: [2, 5, 8]     # 这些房间向左走
+    up_doors: [3, 6]          # 这些房间向上走
+    boss_room: 10             # Boss房间索引
+    total_rooms: 10           # 总房间数
+  dungeon_2:
+    left_doors: [1, 4, 7]
+    up_doors: [2, 5]
+    boss_room: 9
+    total_rooms: 9
+
+# 翻牌配置
+card_flip:
+  enabled: true
+  purple_priority: true       # 紫卡优先
+  random_selection: true      # 无紫卡时随机选择
+
+# 卡住恢复配置
+stuck_recovery:
+  door_threshold: 5           # door_count >= 5 判定卡门
+  player_threshold: 4         # people_count > 4 判定角色卡住
+  frame_similarity_threshold: 0.95  # 帧相似度阈值
+  recovery_cooldown: 5.0      # 恢复动作冷却时间(秒)
+
+# 定时调度配置
+schedule:
+  enabled: false              # 是否启用定时任务
+  hour: 6                     # 启动时间: 小时
+  minute: 0                   # 启动时间: 分钟
+  recurring: true             # 是否每日重复
+
+# 多角色配置
+multi_character:
+  enabled: true              # 是否启用多角色模式
+  start_name: ""              # 开始角色名称(可选)
+  end_name: ""                # 结束角色名称(可选)
+  role_list:
+    - id: "DevilMayCry"
+      name: "鬼泣"
+      dungeon_runs: 16
+      art:
+        - "q"
+        - "w"
+        - "e"
+        - "r"
+        - "t"
+        - "y"
+        - "s"
+        - "d"
+        - "f"
+        - "g"
+        - "a"
+      art_time:
+        q: 13.3
+        w: 26.3
+        e: 30.0
+        r: 5.3
+        t: 10.0
+        y: 13.3
+        s: 20.0
+        d: 26.7
+        f: 13.3
+        g: 40.0
+        a: 30.0
+      buff:
+        - - "right"
+          - "right"
+          - "space"
+    - id: "Muse"
+      name: "缪斯"
+      art:
+        - - "q"
+          - "w"
+        - "t"
+        - "e"
+        - - "q"
+          - "e"
+        - "y"
+        - "d"
+        - "r"
+        - - "q"
+          - "r"
+        - "f"
+        - "g"
+        - "h"
+      art_time:
+        w: 19
+        e: 19
+        r: 18.8
+        t: 10
+        y: 13.3
+        d: 9.4
+        f: 23.4
+        g: 14
+        h: 7
+      buff:
+        - - "right"
+          - "right"
+          - "space"
+        - - "up"
+          - "up"
+          - "space"
