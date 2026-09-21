@@ -12,6 +12,39 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def detector_options(config: dict) -> dict:
+    """统一单模型和多模型配置，同时兼容旧版 conf/iou 字段。"""
+    return {
+        'model_path': config['path'],
+        'conf_threshold': config.get('conf_threshold', config.get('conf', 0.5)),
+        'iou_threshold': config.get('iou_threshold', config.get('iou', 0.45)),
+        'classes': config.get('classes'),
+    }
+
+
+def create_detector(model_configs: Dict[str, dict], device: str = 'cuda', backend: str = 'ultralytics',
+                    cpu_threads: int = 0):
+    """Create a detector adapter while keeping game logic backend-agnostic."""
+    if not model_configs:
+        return None
+    backend = backend.lower()
+    if backend == 'ultralytics':
+        if len(model_configs) == 1:
+            _, config = next(iter(model_configs.items()))
+            return YOLODetector(device=device, **detector_options(config))
+        return MultiModelDetector(model_configs=model_configs, device=device)
+    if backend == 'onnxruntime':
+        from .onnx_detector import ONNXDetector, ONNXMultiModelDetector, onnx_detector_options
+
+        if device != 'cpu':
+            raise ValueError("backend='onnxruntime' requires detection.device='cpu'")
+        if len(model_configs) == 1:
+            _, config = next(iter(model_configs.items()))
+            return ONNXDetector(cpu_threads=cpu_threads, **onnx_detector_options(config))
+        return ONNXMultiModelDetector(model_configs=model_configs, cpu_threads=cpu_threads)
+    raise ValueError("Unsupported detection backend: {}".format(backend))
+
+
 @dataclass
 class Detection:
     """单个检测结果"""
@@ -112,7 +145,7 @@ class YOLODetector:
 
         Args:
             model_path: 模型文件路径
-            device: 推理设备 ('cuda' 或 'cpu')
+            device: 推理设备 ('cuda[:index]' 或 'cpu')
             conf_threshold: 置信度阈值
             iou_threshold: IOU阈值
             classes: 要检测的类别ID列表，None表示检测所有类别
@@ -134,15 +167,15 @@ class YOLODetector:
         self.class_names = self.model.names
         logger.info(f"模型类别: {list(self.class_names.values())}")
 
-        # 验证设备
-        if device == 'cuda':
+        # 验证设备。自动分档可能选择 cuda:1 等非默认 CUDA 设备。
+        if str(device).lower().startswith('cuda'):
             try:
                 import torch
                 if not torch.cuda.is_available():
                     logger.warning("CUDA 不可用，切换到 CPU")
                     self.device = 'cpu'
                 else:
-                    logger.info(f"使用设备: CUDA")
+                    logger.info(f"使用设备: {device}")
             except ImportError:
                 logger.warning("torch 未安装，使用 CPU")
                 self.device = 'cpu'
@@ -309,11 +342,8 @@ class MultiModelDetector:
         for name, config in model_configs.items():
             logger.info(f"加载模型 [{name}]: {config['path']}")
             self.detectors[name] = YOLODetector(
-                model_path=config['path'],
                 device=device,
-                conf_threshold=config.get('conf', 0.5),
-                iou_threshold=config.get('iou', 0.45),
-                classes=config.get('classes')
+                **detector_options(config)
             )
 
     def detect(

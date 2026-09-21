@@ -1,0 +1,61 @@
+# Low-spec CPU profile. Keep the game client at its normal resolution; the
+# detector letterboxes only its input and maps boxes back to client coordinates.
+extends: settings.yaml
+
+game:
+  window_title: "地下城与勇士：创新世纪"
+  target_fps: 10
+
+capture:
+  method: "mss"
+  monitor_index: 1
+
+detection:
+  backend: onnxruntime
+  device: cpu
+  cpu_threads: 2
+  models:
+    main:
+      # Generated on the GPU training machine by scripts/export_cpu_onnx.py.
+      path: models/cpu/best_dxc_yolo11n_416_fp32.onnx
+      imgsz: 416
+      conf_threshold: 0.10
+      iou_threshold: 0.10
+      max_det: 300
+      class_names:
+        - people
+        - door
+        - monster
+        - brand
+        - menu
+        - article
+        - purple_card
+        - hero
+        - elite
+        - boss-n
+        - boss-m
+
+control:
+  humanize: true
+  mouse_sensitivity: 1.0
+  random_delay_range: [0.02, 0.08]
+
+debug:
+  enabled: false
+  save_screenshots: false
+
+ocr:
+  enabled: true
+
+dungeon:
+  mode: new_abyss
+  max_runs: 16
+  collect_items: true
+  menu_detect_threshold: 180
+  menu_timeout_seconds: 6
+  character_button_pos: [960, 540]
+
+hotkeys:
+  start: f1
+  pause: f2
+  stop: f3

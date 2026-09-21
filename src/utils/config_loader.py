@@ -4,7 +4,7 @@
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 
 # ============ 技能和角色配置 ============
@@ -136,6 +136,7 @@ class DungeonConfig:
     sell_after_runs: int = 5          # 刷图多少次后卖装备
     collect_items: bool = True        # 自动拾取
     menu_detect_threshold: int = 180  # menu连续检测次数阈值
+    menu_timeout_seconds: Optional[float] = None
     character_button_pos: Tuple[int, int] = (960, 540)  # 选择角色按钮位置
 
 
@@ -259,6 +260,8 @@ class CaptureConfig:
 class DetectionConfig:
     """检测配置"""
     device: str = "cuda"
+    backend: str = "ultralytics"
+    cpu_threads: int = 0
     models: Dict[str, dict] = None
 
     def __post_init__(self):
@@ -357,24 +360,53 @@ class ConfigLoader:
 
     @staticmethod
     def load(config_path: str = "config/settings.yaml") -> Config:
-        """
-        从YAML文件加载配置
-
-        Args:
-            config_path: 配置文件路径
-
-        Returns:
-            Config对象
-        """
+        """Load a YAML config, resolving an optional relative ``extends`` parent."""
         path = Path(config_path)
         if not path.exists():
             print(f"Config file not found: {config_path}, using defaults")
             return Config()
+        return ConfigLoader._parse_config(ConfigLoader._load_yaml_tree(path, set()))
 
-        with open(path, 'r', encoding='utf-8') as f:
-            data = yaml.safe_load(f)
 
-        return ConfigLoader._parse_config(data)
+    @staticmethod
+    def _load_yaml_tree(path: Path, visited: set) -> Dict[str, Any]:
+        resolved = path.resolve()
+        if resolved in visited:
+            raise ValueError(f"Configuration extends cycle detected at: {path}")
+        visited.add(resolved)
+        try:
+            with path.open('r', encoding='utf-8') as stream:
+                data = yaml.safe_load(stream)
+            if data is None:
+                data = {}
+            if not isinstance(data, dict):
+                raise ValueError('Configuration root must be a mapping')
+
+            parent = data.pop('extends', None)
+            if parent is None:
+                return data
+            if not isinstance(parent, str) or not parent:
+                raise ValueError('Configuration extends must be a non-empty path string')
+            parent_path = Path(parent)
+            if not parent_path.is_absolute():
+                parent_path = path.parent / parent_path
+            if not parent_path.is_file():
+                raise FileNotFoundError(f"Parent configuration not found: {parent_path}")
+            return ConfigLoader._merge_config_data(
+                ConfigLoader._load_yaml_tree(parent_path, visited), data
+            )
+        finally:
+            visited.remove(resolved)
+
+    @staticmethod
+    def _merge_config_data(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        merged = dict(base)
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = ConfigLoader._merge_config_data(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
 
     @staticmethod
     def _parse_config(data: Dict[str, Any]) -> Config:
@@ -399,6 +431,8 @@ class ConfigLoader:
             detection_data = data['detection']
             config.detection = DetectionConfig(
                 device=detection_data.get('device', 'cuda'),
+                backend=detection_data.get('backend', 'ultralytics'),
+                cpu_threads=detection_data.get('cpu_threads', 0),
                 models=detection_data.get('models', {})
             )
 
@@ -609,6 +643,7 @@ class ConfigLoader:
             sell_after_runs=data.get('sell_after_runs', 5),
             collect_items=data.get('collect_items', True),
             menu_detect_threshold=data.get('menu_detect_threshold', 180),
+            menu_timeout_seconds=data.get('menu_timeout_seconds'),
             character_button_pos=tuple(char_button_pos) if isinstance(char_button_pos, list) else char_button_pos
         )
 
@@ -707,52 +742,18 @@ class ConfigLoader:
 
     @staticmethod
     def save(config: Config, config_path: str = "config/settings.yaml") -> None:
-        """
-        保存配置到YAML文件
-
-        Args:
-            config: Config对象
-            config_path: 配置文件路径
-        """
+        """保存所有配置项，保留可由 load 重新读取的 YAML 格式。"""
         path = Path(config_path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        data = {
-            'game': {
-                'window_title': config.game.window_title,
-                'target_fps': config.game.target_fps
-            },
-            'capture': {
-                'method': config.capture.method,
-                'monitor_index': config.capture.monitor_index
-            },
-            'detection': {
-                'device': config.detection.device,
-                'models': config.detection.models
-            },
-            'control': {
-                'humanize': config.control.humanize,
-                'mouse_sensitivity': config.control.mouse_sensitivity,
-                'random_delay_range': list(config.control.random_delay_range)
-            },
-            'debug': {
-                'enabled': config.debug.enabled,
-                'show_detections': config.debug.show_detections,
-                'show_fps': config.debug.show_fps,
-                'show_state': config.debug.show_state,
-                'save_screenshots': config.debug.save_screenshots,
-                'screenshot_interval': config.debug.screenshot_interval,
-                'screenshot_dir': config.debug.screenshot_dir
-            },
-            'hotkeys': {
-                'start': config.hotkeys.start,
-                'pause': config.hotkeys.pause,
-                'stop': config.hotkeys.stop
-            }
-        }
+        data = asdict(config)
+        # YAML 的技能条件字段名与 dataclass 字段名不同。
+        for character in data['characters']['presets'].values():
+            for skill in character['skills']:
+                skill['condition'] = skill.pop('condition_type')
 
         with open(path, 'w', encoding='utf-8') as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+            yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
 
     @staticmethod
     def create_default() -> Config:

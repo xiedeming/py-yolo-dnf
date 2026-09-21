@@ -225,7 +225,7 @@ class DungeonRunner:
 
         # 使用技能
         if self.engine.skill_manager:
-            self.engine.skill_manager.use_next_available_skill(context)
+            self.engine.skill_manager.use_next_available_skill()
         else:
             # 普通攻击
             self.engine.controller.key_press('x')

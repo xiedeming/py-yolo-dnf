@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..capture.mss_capture import MSSCapture
 from ..capture.window_manager import WindowManager
-from ..detection.detector import YOLODetector, MultiModelDetector, Detection
+from ..detection.detector import Detection, create_detector
 from ..control.input_controller import InputController, InputConfig
 from ..decision.game_context import GameContext, GameState
 from ..decision.state_machine import StateMachine, create_game_state_machine
@@ -53,7 +53,14 @@ class GameEngine:
         elif config_path:
             self.config = ConfigLoader.load(config_path)
         else:
-            self.config = ConfigLoader.load("config/settings.yaml")
+            # Keep direct GameEngine users on the same automatic profile as the
+            # CLI.  The import is lazy so CPU-only test doubles do not need the
+            # optional hardware probing dependencies.
+            from ..utils.hardware_profile import select_runtime_profile
+
+            profile = select_runtime_profile()
+            self.config = ConfigLoader.load(str(profile.config_path))
+            self.config.detection.device = profile.device
 
         # 初始化日志
         self.logger = init_logger()
@@ -65,6 +72,9 @@ class GameEngine:
         # 控制变量
         self._running = False
         self._paused = False
+        self._stop_requested = False
+        self._hotkey_listener = None
+        self._hotkey_last_pressed: Dict[str, float] = {}
         self._stats = EngineStats()
         self._frame_times: list = []
         self._debug_window_size: tuple = None  # 调试窗口尺寸缓存
@@ -82,6 +92,7 @@ class GameEngine:
         self._screenshot_dir = Path(self.config.debug.screenshot_dir)
         self._screenshot_dir.mkdir(parents=True, exist_ok=True)
         self._last_screenshot_time: float = 0.0
+        self._menu_detect_started_at: Optional[float] = None
         # 配置中是帧数，转换为秒数
         target_fps = self.config.game.target_fps if self.config.game.target_fps > 0 else 30
         self._screenshot_interval: float = self.config.debug.screenshot_interval / target_fps
@@ -176,22 +187,17 @@ class GameEngine:
             self.detector = None
             return
 
-        if len(models) == 1:
-            # 单模型
-            name, model_config = list(models.items())[0]
-            self.detector = YOLODetector(
-                model_path=model_config['path'],
-                device=self.config.detection.device,
-                conf_threshold=model_config.get('conf', 0.5)
-            )
-            self.logger.info(f"Loaded single model: {name}")
-        else:
-            # 多模型
-            self.detector = MultiModelDetector(
-                model_configs=models,
-                device=self.config.detection.device
-            )
-            self.logger.info(f"Loaded {len(models)} models")
+        backend = getattr(self.config.detection, 'backend', 'ultralytics')
+        cpu_threads = getattr(self.config.detection, 'cpu_threads', 0)
+        self.detector = create_detector(
+            model_configs=models,
+            device=self.config.detection.device,
+            backend=backend,
+            cpu_threads=cpu_threads,
+        )
+        self.logger.info(
+            f"Loaded {len(models)} model(s) with {backend} backend"
+        )
 
     def _init_character_system(self) -> None:
         """初始化角色系统"""
@@ -226,6 +232,8 @@ class GameEngine:
                 # 初始化技能队列
                 self.skill_queue = SkillQueue(self.controller)
                 self.skill_queue.load_skills(first_role.art, first_role.art_time)
+                if self.skill_manager:
+                    self.skill_manager.skill_queue = self.skill_queue
                 self.logger.info(f"技能队列已初始化: {len(first_role.art)} 个技能")
 
                 # 初始化Buff管理器
@@ -502,7 +510,7 @@ class GameEngine:
         # 预热检测器
         if self.detector:
             self.logger.info("Warming up detector...")
-            if isinstance(self.detector, MultiModelDetector):
+            if hasattr(self.detector, 'warmup_all'):
                 self.detector.warmup_all()
             else:
                 self.detector.warmup()
@@ -527,6 +535,8 @@ class GameEngine:
 
         self._running = True
         self._paused = False
+        self._stop_requested = False
+        self._start_hotkey_listener()
         self.logger.success("Engine started!")
 
         try:
@@ -546,6 +556,10 @@ class GameEngine:
 
         while self._running:
             loop_start = time.perf_counter()
+
+            if getattr(self, '_stop_requested', False):
+                self._running = False
+                break
 
             if not self._paused:
                 try:
@@ -568,8 +582,10 @@ class GameEngine:
                     self.logger.info("Exit requested via debug window")
                     break
                 elif key == ord('p'):  # P
-                    self._paused = not self._paused
-                    self.logger.info(f"Paused: {self._paused}")
+                    if self._paused:
+                        self.resume()
+                    else:
+                        self.pause()
 
     def _process_frame(self) -> None:
         """处理单帧"""
@@ -620,10 +636,11 @@ class GameEngine:
         # 4. 状态机决策
         decision_start = time.perf_counter()
         self.state_machine.update(self.context)
+        current_state = self.state_machine.get_state()
+        self.context.state = current_state
         self._stats.decision_time = time.perf_counter() - decision_start
 
         # 5. 执行状态回调
-        current_state = self.state_machine.get_state()
         if current_state in self._state_callbacks:
             try:
                 self._state_callbacks[current_state](self.context)
@@ -719,7 +736,7 @@ class GameEngine:
         raw_detections = {}
 
         # 获取原始检测结果
-        if isinstance(self.detector, MultiModelDetector):
+        if hasattr(self.detector, 'detect_all'):
             results = self.detector.detect_all(image)
             for name, result in results.items():
                 raw_detections[name] = result.detections
@@ -771,17 +788,27 @@ class GameEngine:
 
     def _execute_action(self, state: GameState, image=None) -> None:
         """执行状态对应的动作"""
-        # 检测菜单并更新计数
+        # 检测菜单并更新计数。低配配置可用真实秒数，避免检测频率变化改变超时语义。
         has_menu = self.context.has_menu()
         if has_menu:
             self.context.increment_menu_detect()
-            self.logger.debug(f"菜单检测计数: {self.context.menu_detect_count}/{self.context.menu_detect_threshold}")
+            if self._menu_detect_started_at is None:
+                self._menu_detect_started_at = time.monotonic()
         else:
-            # 如果没有检测到菜单，重置计数
             self.context.reset_menu_detect()
+            self._menu_detect_started_at = None
+
+        timeout_seconds = getattr(self.config.dungeon, 'menu_timeout_seconds', None)
+        menu_timeout = (
+            has_menu and self._menu_detect_started_at is not None and
+            timeout_seconds is not None and
+            time.monotonic() - self._menu_detect_started_at >= timeout_seconds
+        )
+        if timeout_seconds is None:
+            menu_timeout = has_menu and self.context.is_menu_detect_timeout()
 
         # 检查菜单检测是否超时（单独处理）
-        if has_menu and self.context.is_menu_detect_timeout():
+        if menu_timeout:
             if self.character_switcher:
                 # 启用了多角色模式，执行角色切换
                 self.logger.info(f"菜单检测超时，触发角色切换...")
@@ -791,6 +818,7 @@ class GameEngine:
                 self.logger.warning("菜单检测超时，尝试按Tab键恢复...")
                 self.controller.key_press('tab')
                 self.context.reset_menu_detect()
+                self._menu_detect_started_at = None
             return
 
         # 检查是否需要切换角色（刷图次数达到上限）
@@ -1188,9 +1216,47 @@ class GameEngine:
         except Exception:
             return False
 
+    def _start_hotkey_listener(self) -> None:
+        """Start F1/F2/F3 controls even when the OpenCV debug window is disabled."""
+        if self._hotkey_listener is not None:
+            return
+        try:
+            from pynput import keyboard
+            self._hotkey_listener = keyboard.Listener(on_press=self._on_hotkey_press)
+            self._hotkey_listener.daemon = True
+            self._hotkey_listener.start()
+        except Exception as error:
+            self.logger.warning(f"Global hotkeys unavailable: {error}")
+
+    def _stop_hotkey_listener(self) -> None:
+        listener = getattr(self, '_hotkey_listener', None)
+        if listener is not None:
+            listener.stop()
+            self._hotkey_listener = None
+
+    def _on_hotkey_press(self, key) -> None:
+        """Handle configured global hotkeys without doing expensive work in the listener thread."""
+        key_name = getattr(key, 'name', None) or str(key).split('.')[-1].lower()
+        now = time.monotonic()
+        if now - self._hotkey_last_pressed.get(key_name, 0.0) < 0.35:
+            return
+        self._hotkey_last_pressed[key_name] = now
+        hotkeys = self.config.hotkeys
+        if key_name == hotkeys.stop:
+            self._stop_requested = True
+            self.pause()
+        elif key_name == hotkeys.pause:
+            if self._paused:
+                self.resume()
+            else:
+                self.pause()
+        elif key_name == hotkeys.start:
+            self.resume()
+
     def pause(self) -> None:
         """暂停引擎"""
         self._paused = True
+        self.controller.release_all_inputs()
         self.logger.info("Engine paused")
 
     def resume(self) -> None:
@@ -1202,6 +1268,9 @@ class GameEngine:
         """停止引擎"""
         self.logger.info("Stopping engine...")
         self._running = False
+        self._stop_requested = True
+        self._stop_hotkey_listener()
+        self.controller.release_all_inputs()
 
         # 停止技能队列线程
         if self.skill_queue:

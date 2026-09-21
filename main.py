@@ -22,8 +22,8 @@ except Exception:
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from src.core.engine import GameEngine, EngineConfig
 from src.utils.config_loader import ConfigLoader
+from src.utils.hardware_profile import select_runtime_profile
 from src.utils.logger import init_logger
 
 
@@ -34,7 +34,7 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python main.py                           # 使用默认配置（自动进入副本）
+  python main.py                           # 按显卡显存自动选择高低配
   python main.py -c config/settings.yaml   # 指定配置文件
   python main.py -w "Game Title"           # 指定窗口标题
   python main.py -m models/best.pt         # 指定模型文件
@@ -52,8 +52,8 @@ def parse_args():
     parser.add_argument(
         '-c', '--config',
         type=str,
-        default='config/settings.yaml',
-        help='配置文件路径 (default: config/settings.yaml)'
+        default=None,
+        help='配置文件路径（默认根据显卡显存自动选择高低配）'
     )
 
     parser.add_argument(
@@ -72,15 +72,15 @@ def parse_args():
         '-d', '--device',
         type=str,
         choices=['cuda', 'cpu'],
-        default='cuda',
-        help='推理设备 (default: cuda)'
+        default=None,
+        help='推理设备（默认使用配置文件）'
     )
 
     parser.add_argument(
         '-f', '--fps',
         type=int,
-        default=30,
-        help='目标帧率 (default: 30)'
+        default=None,
+        help='目标帧率，必须为正整数（默认使用配置文件）'
     )
 
     parser.add_argument(
@@ -126,7 +126,10 @@ def parse_args():
         help='跳过自动进入副本流程'
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.fps is not None and args.fps <= 0:
+        parser.error('--fps must be a positive integer')
+    return args
 
 
 def list_windows():
@@ -192,18 +195,61 @@ def list_maps(config):
     print()
 
 
-def main():
-    """主函数"""
-    args = parse_args()
+def _load_config_for_startup(args):
+    """Load an explicit config or select the local hardware profile."""
+    # Listing commands should remain usable on machines without PyTorch/CUDA.
+    listing_mode = args.list_windows or args.list_characters or args.list_maps
+    if args.config is not None:
+        config_path = Path(args.config)
+        profile = None
+    elif listing_mode:
+        config_path = project_root / 'config' / 'settings.yaml'
+        profile = None
+    else:
+        profile = select_runtime_profile(
+            project_root=str(project_root),
+            requested_device=args.device,
+        )
+        config_path = profile.config_path
 
-    # 加载配置
-    config_path = Path(args.config)
     if config_path.exists():
         config = ConfigLoader.load(str(config_path))
         print(f"Loaded config from: {config_path}")
     else:
         print(f"Config file not found: {config_path}, using defaults")
         config = ConfigLoader.create_default()
+
+    if profile is not None:
+        # The high profile may target the largest GPU (cuda:1, etc.).
+        config.detection.device = profile.device
+        print(f"自动选择运行配置: {profile.summary()}")
+    return config
+
+
+def _validate_detector_selection(config):
+    """Reject combinations that the selected detector backend cannot load."""
+    backend = str(getattr(config.detection, 'backend', 'ultralytics')).lower()
+    device = str(getattr(config.detection, 'device', 'cpu')).lower()
+    if backend == 'onnxruntime' and device != 'cpu':
+        raise ValueError("ONNX Runtime 配置必须使用 CPU；请移除 -d cuda 或选择高配配置")
+
+    if backend != 'onnxruntime':
+        return
+    for name, model in (config.detection.models or {}).items():
+        model_path = str(model.get('path', ''))
+        suffix = Path(model_path).suffix.lower()
+        if suffix and suffix != '.onnx':
+            raise ValueError(
+                f"模型 {name} 使用 ONNX Runtime，但文件不是 .onnx: {model_path}"
+            )
+
+
+def main():
+    """主函数"""
+    args = parse_args()
+
+    # 加载配置
+    config = _load_config_for_startup(args)
 
     # 列出窗口模式
     if args.list_windows:
@@ -226,16 +272,21 @@ def main():
     if args.model:
         if not config.detection.models:
             config.detection.models = {}
-        config.detection.models['main'] = {
-            'path': args.model,
-            'conf': 0.5
-        }
+        model_config = dict(config.detection.models.get('main', {}))
+        model_config['path'] = args.model
+        config.detection.models['main'] = model_config
     if args.device:
         config.detection.device = args.device
-    if args.fps:
+    if args.fps is not None:
         config.game.target_fps = args.fps
     if args.no_debug:
         config.debug.enabled = False
+
+    try:
+        _validate_detector_selection(config)
+    except ValueError as error:
+        print(f"配置错误: {error}")
+        return 2
 
     # 角色和地图选择
     if args.character:
@@ -280,10 +331,12 @@ def main():
             print(f"当前地图: {map_config.name} ({config.maps.current})")
     print("=" * 60 + "\n")
 
-    # 创建引擎
-    engine = GameEngine(config=config)
-
+    engine = None
     try:
+        # 创建引擎。将导入和初始化放入异常处理，模型/后端缺失时给出可读错误。
+        from src.core.engine import GameEngine
+
+        engine = GameEngine(config=config)
         print("按 P 暂停/恢复, Q 或 ESC 退出\n")
         # 是否自动进入副本
         auto_enter = not args.no_enter
@@ -296,7 +349,7 @@ def main():
         traceback.print_exc()
         return 1
     finally:
-        if engine.is_running():
+        if engine is not None and engine.is_running():
             engine.stop()
 
     print("\n程序已退出")

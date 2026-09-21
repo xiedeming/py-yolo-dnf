@@ -4,11 +4,15 @@
 import time
 import random
 import math
+import logging
 from typing import Tuple, Optional, List
 from dataclasses import dataclass
 
 from pynput.keyboard import Controller as KeyboardController, Key
 from pynput.mouse import Controller as MouseController, Button
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,6 +40,8 @@ class InputController:
 
         # 当前移动方向状态: None, 'left', 'right'
         self._current_moving_direction: Optional[str] = None
+        self._pressed_keys = set()
+        self._pressed_mouse_buttons = set()
 
         # 特殊键映射
         self._special_keys = {
@@ -103,8 +109,16 @@ class InputController:
         """
         key_obj = self._get_key(key)
         self.keyboard.press(key_obj)
-        time.sleep(duration)
-        self.keyboard.release(key_obj)
+        self._pressed_keys.add(key_obj)
+        try:
+            time.sleep(duration)
+        finally:
+            try:
+                self.keyboard.release(key_obj)
+            except Exception as error:
+                logger.warning("Failed to release key %r: %s", key_obj, error)
+            else:
+                self._pressed_keys.discard(key_obj)
         self._delay()
 
     def key_down(self, key: str) -> None:
@@ -114,7 +128,9 @@ class InputController:
         Args:
             key: 键名称
         """
-        self.keyboard.press(self._get_key(key))
+        key_obj = self._get_key(key)
+        self.keyboard.press(key_obj)
+        self._pressed_keys.add(key_obj)
 
     def key_up(self, key: str) -> None:
         """
@@ -123,7 +139,9 @@ class InputController:
         Args:
             key: 键名称
         """
-        self.keyboard.release(self._get_key(key))
+        key_obj = self._get_key(key)
+        self.keyboard.release(key_obj)
+        self._pressed_keys.discard(key_obj)
 
     def key_combo(self, *keys: str, duration: float = 0.1) -> None:
         """
@@ -133,17 +151,27 @@ class InputController:
             keys: 键名称序列，如 ('ctrl', 'c')
             duration: 按住时间
         """
-        # 按下所有键
-        for key in keys:
-            self.keyboard.press(self._get_key(key))
-            time.sleep(0.02)
+        pressed_keys = []
+        try:
+            # 按下所有键
+            for key in keys:
+                key_obj = self._get_key(key)
+                self.keyboard.press(key_obj)
+                self._pressed_keys.add(key_obj)
+                pressed_keys.append(key_obj)
+                time.sleep(0.02)
 
-        time.sleep(duration)
-
-        # 释放所有键（逆序）
-        for key in reversed(keys):
-            self.keyboard.release(self._get_key(key))
-            time.sleep(0.02)
+            time.sleep(duration)
+        finally:
+            # 释放所有已按下的键（逆序）
+            for key_obj in reversed(pressed_keys):
+                try:
+                    self.keyboard.release(key_obj)
+                except Exception as error:
+                    logger.warning("Failed to release key %r: %s", key_obj, error)
+                else:
+                    self._pressed_keys.discard(key_obj)
+                time.sleep(0.02)
 
         self._delay()
 
@@ -169,7 +197,9 @@ class InputController:
         """
         for char in text:
             self.keyboard.press(char)
+            self._pressed_keys.add(char)
             self.keyboard.release(char)
+            self._pressed_keys.discard(char)
             if self.config.humanize:
                 time.sleep(interval + random.uniform(0, 0.02))
             else:
@@ -268,11 +298,19 @@ class InputController:
 
         for _ in range(clicks):
             self.mouse.press(btn)
-            if self.config.humanize:
-                time.sleep(0.05 + random.uniform(0, 0.02))
-            else:
-                time.sleep(0.05)
-            self.mouse.release(btn)
+            self._pressed_mouse_buttons.add(btn)
+            try:
+                if self.config.humanize:
+                    time.sleep(0.05 + random.uniform(0, 0.02))
+                else:
+                    time.sleep(0.05)
+            finally:
+                try:
+                    self.mouse.release(btn)
+                except Exception as error:
+                    logger.warning("Failed to release mouse button %r: %s", btn, error)
+                else:
+                    self._pressed_mouse_buttons.discard(btn)
             if clicks > 1:
                 time.sleep(interval)
 
@@ -299,7 +337,9 @@ class InputController:
             'right': Button.right,
             'middle': Button.middle
         }
-        self.mouse.press(btn_map.get(button.lower(), Button.left))
+        btn = btn_map.get(button.lower(), Button.left)
+        self.mouse.press(btn)
+        self._pressed_mouse_buttons.add(btn)
 
     def mouse_up(self, button: str = 'left') -> None:
         """
@@ -313,7 +353,30 @@ class InputController:
             'right': Button.right,
             'middle': Button.middle
         }
-        self.mouse.release(btn_map.get(button.lower(), Button.left))
+        btn = btn_map.get(button.lower(), Button.left)
+        self.mouse.release(btn)
+        self._pressed_mouse_buttons.discard(btn)
+
+    def release_all_inputs(self) -> None:
+        """Release every key and mouse button held by this controller."""
+        for key_obj in tuple(self._pressed_keys):
+            try:
+                self.keyboard.release(key_obj)
+            except Exception as error:
+                logger.warning("Failed to release key %r: %s", key_obj, error)
+            else:
+                self._pressed_keys.discard(key_obj)
+
+        for button in tuple(self._pressed_mouse_buttons):
+            try:
+                self.mouse.release(button)
+            except Exception as error:
+                logger.warning("Failed to release mouse button %r: %s", button, error)
+            else:
+                self._pressed_mouse_buttons.discard(button)
+
+        if not self._pressed_keys:
+            self._current_moving_direction = None
 
     def mouse_scroll(self, direction: str, amount: int = 1) -> None:
         """

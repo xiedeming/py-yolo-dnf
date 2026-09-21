@@ -5,7 +5,7 @@ import time
 import math
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from collections import deque
 
 from ..detection.detector import Detection
@@ -82,6 +82,7 @@ class GameContext:
         self.state = GameState.PLAYING
         self.frame_count = 0
         self.last_update: float = time.time()
+        self._last_stats_update: float = time.monotonic()
         self.session_start: float = time.time()
 
         # 当前帧检测结果
@@ -142,6 +143,9 @@ class GameContext:
         """
         self.frame_count += 1
         self.last_update = time.time()
+        now_monotonic = time.monotonic()
+        elapsed = max(0.0, now_monotonic - self._last_stats_update)
+        self._last_stats_update = now_monotonic
         self.stats.total_frames += 1
 
         # 更新状态
@@ -166,9 +170,9 @@ class GameContext:
 
         # 更新游戏时间
         if self.state == GameState.PLAYING:
-            self.stats.play_time += 1.0 / 30  # 假设30fps
+            self.stats.play_time += elapsed
         elif self.state == GameState.COMBAT:
-            self.stats.combat_time += 1.0 / 30
+            self.stats.combat_time += elapsed
 
     def set_screen_center(self, width: int, height: int) -> None:
         """
@@ -550,7 +554,3 @@ class GameContext:
                 'deaths': self.stats.deaths
             }
         }
-
-
-# 为了兼容性导入Tuple
-from typing import Tuple

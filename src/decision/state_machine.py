@@ -436,12 +436,14 @@ def create_game_state_machine() -> StateMachine:
     sm.add_transition(
         GameState.PLAYING,
         GameState.DEAD,
-        condition=lambda ctx: ctx.get_health_status() == "critical"
+        condition=lambda ctx: ctx.get_health_status() == "critical",
+        priority=30
     )
     sm.add_transition(
         GameState.COMBAT,
         GameState.DEAD,
-        condition=lambda ctx: ctx.get_health_status() == "critical"
+        condition=lambda ctx: ctx.get_health_status() == "critical",
+        priority=30
     )
 
     # DEAD -> PLAYING: 复活
