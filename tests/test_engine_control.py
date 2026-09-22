@@ -393,7 +393,10 @@ class GameEngineTests(unittest.TestCase):
         GameEngine._main_loop.__globals__["cv2"].waitKey = lambda _: next(keys)
         engine = GameEngine.__new__(GameEngine)
         engine.config = types.SimpleNamespace(game=types.SimpleNamespace(target_fps=0))
-        engine.logger = types.SimpleNamespace(info=lambda *_: None)
+        engine.logger = types.SimpleNamespace(info=lambda *_: None, debug=lambda *_: None)
+        engine.window_manager = types.SimpleNamespace(
+            is_foreground=lambda: True, bring_to_front=lambda: None
+        )
         engine._running = True
         engine._paused = False
         engine.visualizer = object()
@@ -407,6 +410,44 @@ class GameEngineTests(unittest.TestCase):
         engine._main_loop()
 
         self.assertEqual(pause_calls, [True])
+
+
+class EnsureGameFocusTests(unittest.TestCase):
+    """未暂停时主循环必须保证游戏窗口是前台窗口。
+
+    调试窗口出现或用户切走焦点后，模拟按键会打到别的窗口，表现为"键盘不操作
+    游戏"，因此主循环每帧都要把焦点抢回游戏。
+    """
+
+    def _engine(self, foreground):
+        GameEngine, _ = load_engine()
+        engine = GameEngine.__new__(GameEngine)
+        engine.logger = types.SimpleNamespace(debug=lambda *_: None)
+        calls = []
+        engine.window_manager = types.SimpleNamespace(
+            is_foreground=lambda: foreground,
+            bring_to_front=lambda: calls.append(True),
+        )
+        return engine, calls
+
+    def test_brings_game_forward_when_focus_was_lost(self):
+        engine, calls = self._engine(foreground=False)
+        engine._ensure_game_focus()
+        self.assertEqual(calls, [True])
+
+    def test_leaves_focus_alone_when_game_is_already_foreground(self):
+        engine, calls = self._engine(foreground=True)
+        engine._ensure_game_focus()
+        self.assertEqual(calls, [])
+
+    def test_focus_failure_does_not_propagate(self):
+        engine, _ = self._engine(foreground=False)
+
+        def boom():
+            raise RuntimeError("focus unavailable")
+
+        engine.window_manager.bring_to_front = boom
+        engine._ensure_game_focus()  # 不得抛出，否则会打断主循环
 
 
 if __name__ == "__main__":

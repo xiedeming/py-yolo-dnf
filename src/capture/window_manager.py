@@ -1,6 +1,8 @@
 """
 窗口管理模块 - Windows窗口定位和管理
 """
+import ctypes
+import win32api
 import win32gui
 import win32con
 import win32process
@@ -191,8 +193,17 @@ class WindowManager:
 
         return rect
 
+    def is_foreground(self) -> bool:
+        """当前窗口是否为前台窗口"""
+        if not self.hwnd:
+            return False
+        try:
+            return win32gui.GetForegroundWindow() == self.hwnd
+        except Exception:
+            return False
+
     def bring_to_front(self) -> None:
-        """将窗口置顶"""
+        """将窗口置顶并激活为前台窗口"""
         if not self.hwnd:
             raise RuntimeError("窗口未找到")
 
@@ -200,8 +211,77 @@ class WindowManager:
         if win32gui.IsIconic(self.hwnd):
             win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
 
-        # 置顶窗口
-        win32gui.SetForegroundWindow(self.hwnd)
+        if win32gui.GetForegroundWindow() == self.hwnd:
+            return
+
+        if not self._set_foreground(self.hwnd):
+            logger.warning("无法将游戏窗口切到前台，模拟按键可能不会进游戏")
+
+    @staticmethod
+    def _set_foreground(hwnd: int) -> bool:
+        """
+        尽力把 hwnd 变成前台窗口，返回是否成功。
+
+        调用进程不是前台进程时，SetForegroundWindow 会被系统静默拒绝（前台
+        锁定）。这里叠加两种业界常用解法：把**当前线程** attach 到前台线程
+        （attach 两个外部线程会报"拒绝访问"），以及先发一次合成的 ALT 击键让
+        系统认为用户刚有输入。
+        """
+        user32 = ctypes.windll.user32
+        vk_menu = 0x12
+        keyeventf_keyup = 0x0002
+
+        current_thread = win32api.GetCurrentThreadId()
+        foreground = win32gui.GetForegroundWindow()
+        foreground_thread = (
+            win32process.GetWindowThreadProcessId(foreground)[0] if foreground else 0
+        )
+
+        attached = False
+        if foreground_thread and foreground_thread != current_thread:
+            try:
+                attached = bool(
+                    win32process.AttachThreadInput(current_thread, foreground_thread, True)
+                )
+            except Exception as error:
+                logger.debug(f"AttachThreadInput 失败: {error}")
+
+        try:
+            user32.keybd_event(vk_menu, 0, 0, 0)
+            user32.keybd_event(vk_menu, 0, keyeventf_keyup, 0)
+            user32.SetForegroundWindow(hwnd)
+            win32gui.BringWindowToTop(hwnd)
+        except Exception as error:
+            logger.debug(f"SetForegroundWindow 失败: {error}")
+        finally:
+            if attached:
+                try:
+                    win32process.AttachThreadInput(current_thread, foreground_thread, False)
+                except Exception:
+                    pass
+
+        return win32gui.GetForegroundWindow() == hwnd
+
+    @staticmethod
+    def make_non_activating(window_title: str) -> None:
+        """
+        给指定标题的窗口加上 WS_EX_NOACTIVATE 扩展样式。
+
+        调试窗口由 OpenCV 创建，出现时会抢走前台焦点，导致之后模拟的按键全部
+        打到调试窗口而不是游戏（表现为"键盘不操作游戏"）。加上该样式后窗口
+        显示/更新都不再激活自己。
+        """
+        try:
+            hwnd = win32gui.FindWindow(None, window_title)
+            if not hwnd:
+                return
+            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            if not ex_style & win32con.WS_EX_NOACTIVATE:
+                win32gui.SetWindowLong(
+                    hwnd, win32con.GWL_EXSTYLE, ex_style | win32con.WS_EX_NOACTIVATE
+                )
+        except Exception as error:
+            logger.debug(f"设置窗口不抢焦点失败: {error}")
 
     def maximize(self) -> None:
         """最大化窗口"""

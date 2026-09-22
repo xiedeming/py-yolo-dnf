@@ -603,6 +603,14 @@ class GameEngine:
         finally:
             self.stop()
 
+    def _ensure_game_focus(self) -> None:
+        """未暂停时保证游戏窗口处于前台，否则注入的按键不会进游戏。"""
+        try:
+            if not self.window_manager.is_foreground():
+                self.window_manager.bring_to_front()
+        except Exception as error:
+            self.logger.debug(f"保持游戏窗口焦点失败: {error}")
+
     def _main_loop(self) -> None:
         """主循环"""
         frame_interval = 1.0 / self.config.game.target_fps if self.config.game.target_fps > 0 else 0
@@ -617,6 +625,8 @@ class GameEngine:
                 break
 
             if not self._paused:
+                # 调试窗口出现或用户切走焦点时，模拟按键会打到别的窗口
+                self._ensure_game_focus()
                 try:
                     self._process_frame()
                 except Exception as e:
@@ -1216,7 +1226,7 @@ class GameEngine:
         if self.stuck_handler:
             self.stuck_handler.step_recovery(self.context, self.movement)
 
-    def _on_exit_stuck_recovery(self) -> None:
+    def _on_exit_stuck_recovery(self, context) -> None:
         """退出卡住恢复状态：清掉标记，避免泄漏到下一帧重复触发。"""
         if self.movement:
             self.movement.stop()
@@ -1292,6 +1302,10 @@ class GameEngine:
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(window_name, w, h)
             cv2.moveWindow(window_name, 0, 0)
+
+            # 调试窗口出现会抢走前台焦点，之后模拟按键就会打到它而不是游戏
+            WindowManager.make_non_activating(window_name)
+            self._ensure_game_focus()
 
         cv2.imshow(window_name, debug_image)
 

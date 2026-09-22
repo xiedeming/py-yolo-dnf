@@ -3,6 +3,7 @@
 沿用 tests/test_decision_regressions.py 的写法：真实 GameContext + 真实状态机，
 不 mock 模块。
 """
+import inspect
 import unittest
 from types import SimpleNamespace
 
@@ -92,6 +93,51 @@ class TransitioningExitTests(unittest.TestCase):
         context.has_door = lambda: False
         sm.update(context)
         self.assertEqual(sm.get_state(), GameState.MENU)
+
+
+class EngineStuckExitWiringTests(unittest.TestCase):
+    """引擎把退出回调注册进状态机这条路径。
+
+    test_engine_control 把状态机整个替换成 None，本文件其余用例只用裸状态机，
+    两者都覆盖不到"GameEngine 注册的 on_exit 回调被状态机以 (context) 调用"——
+    `_on_exit_stuck_recovery` 曾漏掉 context 参数，退出恢复时抛 TypeError，
+    而异常发生在 current_state 赋值之前，状态机于是永久卡在 STUCK_RECOVERY，
+    每帧重复失败。
+    """
+
+    def _build_engine(self):
+        from src.core.engine import GameEngine
+
+        engine = GameEngine.__new__(GameEngine)
+        engine.movement = None
+        engine.stuck_handler = None
+        engine.context = GameContext()
+        engine.state_machine = create_game_state_machine()
+        # 与 GameEngine.__init__ 中一致的注册方式
+        engine.state_machine.set_exit_action(
+            GameState.STUCK_RECOVERY, engine._on_exit_stuck_recovery
+        )
+        return engine
+
+    def test_exit_callback_takes_a_context_argument(self):
+        from src.core.engine import GameEngine
+
+        parameters = list(inspect.signature(GameEngine._on_exit_stuck_recovery).parameters)
+        self.assertEqual(parameters, ['self', 'context'])
+
+    def test_exiting_recovery_returns_to_previous_state_and_clears_flags(self):
+        engine = self._build_engine()
+        context = engine.context
+        engine.state_machine.force_state(GameState.STUCK_RECOVERY)
+        context.set_custom_data('stuck_detected', False)
+        context.set_custom_data('recovery_done', True)
+        context.set_custom_data('stuck_return_state', GameState.PLAYING)
+
+        engine.state_machine.update(context)
+
+        self.assertEqual(engine.state_machine.get_state(), GameState.PLAYING)
+        self.assertFalse(context.get_custom_data('recovery_done', True))
+        self.assertFalse(context.get_custom_data('stuck_detected', True))
 
 
 if __name__ == '__main__':

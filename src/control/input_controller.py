@@ -15,6 +15,96 @@ from pynput.mouse import Controller as MouseController, Button
 logger = logging.getLogger(__name__)
 
 
+# 规范键名 -> pydirectinput 键名。
+# pydirectinput 用 SendInput 发**扫描码**，DirectInput 游戏（DNF 等）才认；
+# pynput 发的是虚拟键码，这类游戏通常直接忽略，表现为"按键没反应"。
+_DIRECTINPUT_KEYS = {
+    'enter': 'enter',
+    'space': 'space',
+    'tab': 'tab',
+    'escape': 'esc',
+    'shift': 'shift',
+    'ctrl': 'ctrl',
+    'alt': 'alt',
+    'backspace': 'backspace',
+    'delete': 'delete',
+    'up': 'up',
+    'down': 'down',
+    'left': 'left',
+    'right': 'right',
+    'home': 'home',
+    'end': 'end',
+    'page_up': 'pageup',
+    'page_down': 'pagedown',
+    'f1': 'f1', 'f2': 'f2', 'f3': 'f3', 'f4': 'f4',
+    'f5': 'f5', 'f6': 'f6', 'f7': 'f7', 'f8': 'f8',
+    'f9': 'f9', 'f10': 'f10', 'f11': 'f11', 'f12': 'f12',
+}
+
+# 规范键名 -> pynput 键对象（pydirectinput 不可用时的回退）
+_PYNPUT_KEYS = {
+    'enter': Key.enter,
+    'space': Key.space,
+    'tab': Key.tab,
+    'escape': Key.esc,
+    'shift': Key.shift,
+    'ctrl': Key.ctrl,
+    'alt': Key.alt,
+    'backspace': Key.backspace,
+    'delete': Key.delete,
+    'up': Key.up,
+    'down': Key.down,
+    'left': Key.left,
+    'right': Key.right,
+    'home': Key.home,
+    'end': Key.end,
+    'page_up': Key.page_up,
+    'page_down': Key.page_down,
+    'f1': Key.f1, 'f2': Key.f2, 'f3': Key.f3, 'f4': Key.f4,
+    'f5': Key.f5, 'f6': Key.f6, 'f7': Key.f7, 'f8': Key.f8,
+    'f9': Key.f9, 'f10': Key.f10, 'f11': Key.f11, 'f12': Key.f12,
+}
+
+
+class DirectInputKeyboard:
+    """pydirectinput 后端：以扫描码发送按键，DirectInput 游戏才会响应。"""
+
+    def __init__(self):
+        import pydirectinput
+
+        # 默认鼠标移到屏幕角落会抛异常中断自动化，必须关掉
+        pydirectinput.FAILSAFE = False
+        self._pydirectinput = pydirectinput
+
+    def press(self, key: str) -> None:
+        self._pydirectinput.keyDown(_DIRECTINPUT_KEYS.get(key, key))
+
+    def release(self, key: str) -> None:
+        self._pydirectinput.keyUp(_DIRECTINPUT_KEYS.get(key, key))
+
+
+class PynputKeyboard:
+    """回退后端：pydirectinput 缺失时使用，部分游戏不会响应。"""
+
+    def __init__(self):
+        self._controller = KeyboardController()
+
+    def press(self, key: str) -> None:
+        self._controller.press(_PYNPUT_KEYS.get(key, key))
+
+    def release(self, key: str) -> None:
+        self._controller.release(_PYNPUT_KEYS.get(key, key))
+
+
+def create_keyboard_backend():
+    """优先 pydirectinput（扫描码），不可用时回退 pynput。"""
+    try:
+        return DirectInputKeyboard()
+    except Exception as error:
+        logger.warning("pydirectinput 不可用，回退 pynput（部分游戏可能不响应）: %s", error)
+        return PynputKeyboard()
+
+
 @dataclass
 class InputConfig:
     """输入控制配置"""
@@ -35,7 +125,7 @@ class InputController:
             config: 输入配置，None则使用默认配置
         """
         self.config = config or InputConfig()
-        self.keyboard = KeyboardController()
+        self.keyboard = create_keyboard_backend()
         self.mouse = MouseController()
 
         # 当前移动方向状态: None, 'left', 'right'
@@ -43,29 +133,30 @@ class InputController:
         self._pressed_keys = set()
         self._pressed_mouse_buttons = set()
 
-        # 特殊键映射
+        # 规范键名表。这里只保存**字符串**，具体键码/键对象由键盘后端翻译，
+        # 这样 pydirectinput 与 pynput 共用一套名字。
         self._special_keys = {
-            'enter': Key.enter,
-            'space': Key.space,
-            'tab': Key.tab,
-            'escape': Key.esc,
-            'esc': Key.esc,
-            'shift': Key.shift,
-            'ctrl': Key.ctrl,
-            'alt': Key.alt,
-            'backspace': Key.backspace,
-            'delete': Key.delete,
-            'up': Key.up,
-            'down': Key.down,
-            'left': Key.left,
-            'right': Key.right,
-            'home': Key.home,
-            'end': Key.end,
-            'page_up': Key.page_up,
-            'page_down': Key.page_down,
-            'f1': Key.f1, 'f2': Key.f2, 'f3': Key.f3, 'f4': Key.f4,
-            'f5': Key.f5, 'f6': Key.f6, 'f7': Key.f7, 'f8': Key.f8,
-            'f9': Key.f9, 'f10': Key.f10, 'f11': Key.f11, 'f12': Key.f12,
+            'enter': 'enter',
+            'space': 'space',
+            'tab': 'tab',
+            'escape': 'escape',
+            'esc': 'escape',
+            'shift': 'shift',
+            'ctrl': 'ctrl',
+            'alt': 'alt',
+            'backspace': 'backspace',
+            'delete': 'delete',
+            'up': 'up',
+            'down': 'down',
+            'left': 'left',
+            'right': 'right',
+            'home': 'home',
+            'end': 'end',
+            'page_up': 'page_up',
+            'page_down': 'page_down',
+            'f1': 'f1', 'f2': 'f2', 'f3': 'f3', 'f4': 'f4',
+            'f5': 'f5', 'f6': 'f6', 'f7': 'f7', 'f8': 'f8',
+            'f9': 'f9', 'f10': 'f10', 'f11': 'f11', 'f12': 'f12',
         }
 
     def _get_random_delay(self) -> float:
@@ -81,15 +172,15 @@ class InputController:
 
     # ========== 键盘控制 ==========
 
-    def _get_key(self, key: str):
+    def _get_key(self, key: str) -> str:
         """
-        获取键对象
+        归一化键名
 
         Args:
             key: 键名称或字符
 
         Returns:
-            pynput键对象
+            规范键名，由键盘后端翻译成实际键码/键对象
         """
         key_lower = key.lower()
         if key_lower in self._special_keys:

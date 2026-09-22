@@ -1,6 +1,8 @@
 """
 调试可视化模块
 """
+import zlib
+
 import cv2
 import numpy as np
 from typing import List, Dict, Tuple, Optional
@@ -13,7 +15,22 @@ from ..detection.detector import Detection
 class DebugVisualizer:
     """调试可视化器"""
 
-    # 类别颜色映射（BGR格式）
+    # 当前模型的实际类别（顺序见 config/settings.yaml 的 detection.models）
+    CLASS_COLORS = {
+        'people': (0, 200, 255),      # 橙黄
+        'door': (0, 255, 255),        # 黄
+        'monster': (0, 0, 255),       # 红
+        'brand': (255, 0, 255),       # 品红
+        'menu': (255, 128, 0),        # 蓝
+        'article': (0, 255, 0),       # 绿
+        'purple_card': (200, 0, 180), # 紫
+        'hero': (0, 255, 128),        # 青绿
+        'elite': (0, 128, 255),       # 橙
+        'boss-n': (128, 0, 255),      # 粉紫
+        'boss-m': (0, 0, 200),        # 深红
+    }
+
+    # 兼容早期的语义类别名（enemy/item/ui 等）
     DEFAULT_COLORS = {
         'enemy': (0, 0, 255),       # 红色
         'enemies': (0, 0, 255),     # 红色
@@ -57,17 +74,45 @@ class DebugVisualizer:
         """
         获取类别对应的颜色
 
+        未登记的类别按名字哈希取一个稳定的颜色。早期实现只有 enemy/item/ui 等
+        语义名，与模型实际类别（people/door/monster/...）一个都不匹配，于是所有
+        检测框都落到兜底的白色。
+
         Args:
             class_name: 类别名称
 
         Returns:
             BGR颜色元组
         """
-        class_lower = class_name.lower()
-        for key, color in self.DEFAULT_COLORS.items():
-            if key in class_lower:
+        key = (class_name or '').lower()
+        if key in self.CLASS_COLORS:
+            return self.CLASS_COLORS[key]
+        for name, color in self.DEFAULT_COLORS.items():
+            if name in key:
                 return color
-        return (255, 255, 255)  # 默认白色
+
+        # 未知类别：由名字决定色相，保证同名稳定、异名可区分
+        hue = zlib.crc32(key.encode('utf-8')) % 180  # OpenCV 色相范围 0-179
+        bgr = cv2.cvtColor(np.uint8([[[hue, 200, 255]]]), cv2.COLOR_HSV2BGR)[0][0]
+        return int(bgr[0]), int(bgr[1]), int(bgr[2])
+
+    @staticmethod
+    def label_text_color(background: Tuple[int, int, int]) -> Tuple[int, int, int]:
+        """
+        按背景亮度选择黑或白文字。
+
+        标签背景用的是类别颜色，文字若固定为白色，在浅色（尤其是兜底白色）背景上
+        会完全看不见。
+
+        Args:
+            background: 标签背景的 BGR 颜色
+
+        Returns:
+            BGR文字颜色
+        """
+        b, g, r = background
+        luminance = 0.114 * b + 0.587 * g + 0.299 * r
+        return (0, 0, 0) if luminance > 140 else (255, 255, 255)
 
     def draw_detection(
         self,
@@ -116,7 +161,7 @@ class DebugVisualizer:
             result, label,
             (x1, y1 - 3),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-            (255, 255, 255), 1
+            self.label_text_color(color), 1
         )
 
         # 绘制中心点

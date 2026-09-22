@@ -14,7 +14,7 @@ detection:
     # 主模型配置 - 修改为您的模型路径
     main:
       path: "models/best_yolo26m.pt"   # 主模型 (YOLO26m，验证集 mAP50-95 最高)
-      conf_threshold: 0.1      # 置信度阈值
+      conf_threshold: 0.5      # 置信度阈值
       iou_threshold: 0.1      # IOU阈值
 
 control:

@@ -81,6 +81,10 @@ class GameLogger:
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.DEBUG)
 
+        # bettercam 依赖 comtypes，后者把每次 COM 指针释放都记成 DEBUG。
+        # 根日志器是 DEBUG，这些行会按帧刷屏（实测占日志一半以上），故单独压制。
+        logging.getLogger("comtypes").setLevel(logging.WARNING)
+
         # 为根日志器添加控制台处理器（如果还没有）
         has_console = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
                          for h in root_logger.handlers)
