@@ -9,6 +9,7 @@ opencv-python>=4.8.0
 
 # Screen capture
 mss>=9.0.0
+bettercam>=1.0.0
 pillow>=10.0.0
 
 # Input control

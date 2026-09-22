@@ -304,13 +304,17 @@ def create_game_state_machine() -> StateMachine:
         priority=15
     )
 
-    # PLAYING -> STUCK_RECOVERY: 卡住检测
-    sm.add_transition(
-        GameState.PLAYING,
-        GameState.STUCK_RECOVERY,
-        condition=lambda ctx: ctx.is_door_stuck() or ctx.is_player_stuck(),
-        priority=8
-    )
+    # PLAYING / COMBAT / TRANSITIONING -> STUCK_RECOVERY: 卡住检测
+    # 三个移动相关状态都能进入 —— 实际最常见的卡住就是"走向门走不动"和"战斗中被卡角落"。
+    # 优先级 16 高于 BUFFING(15) 和 COMBAT 转移(10)，低于 MENU(20)/DEAD(30)：
+    # 出菜单和死亡本来就该优先于解卡。
+    for _stuck_source in (GameState.PLAYING, GameState.COMBAT, GameState.TRANSITIONING):
+        sm.add_transition(
+            _stuck_source,
+            GameState.STUCK_RECOVERY,
+            condition=lambda ctx: ctx.get_custom_data('stuck_detected', False),
+            priority=16,
+        )
 
     # PLAYING -> MENU: 检测到菜单（高优先级）
     sm.add_transition(
@@ -356,6 +360,15 @@ def create_game_state_machine() -> StateMachine:
         GameState.MENU,
         condition=lambda ctx: ctx.has_menu(),
         priority=20
+    )
+
+    # TRANSITIONING -> PLAYING: 门消失
+    # 原有的出口只有 ->LOADING（需要门）和 ->MENU，门一旦消失就会永久卡在 TRANSITIONING，
+    # 而解卡正好可能返回到这个状态，所以必须补一个出口。优先级 0，让上面两条优先。
+    sm.add_transition(
+        GameState.TRANSITIONING,
+        GameState.PLAYING,
+        condition=lambda ctx: not ctx.has_door(),
     )
 
     # LOADING -> PLAYING: 加载完成，检测到敌人或门
@@ -411,12 +424,17 @@ def create_game_state_machine() -> StateMachine:
         condition=lambda ctx: ctx.get_custom_data('card_flip_done', False)
     )
 
-    # STUCK_RECOVERY -> PLAYING: 恢复完成
-    sm.add_transition(
-        GameState.STUCK_RECOVERY,
-        GameState.PLAYING,
-        condition=lambda ctx: ctx.get_custom_data('recovery_done', False)
-    )
+    # STUCK_RECOVERY -> 卡住前的状态: 恢复完成（成功或耗尽后放弃）
+    # 按 stuck_return_state 回到原状态。条件只接收 ctx，所以用闭包把 target 捕获进去。
+    for _stuck_target in (GameState.PLAYING, GameState.COMBAT, GameState.TRANSITIONING):
+        sm.add_transition(
+            GameState.STUCK_RECOVERY,
+            _stuck_target,
+            condition=(lambda target: lambda ctx: (
+                ctx.get_custom_data('recovery_done', False)
+                and ctx.get_custom_data('stuck_return_state') is target
+            ))(_stuck_target)
+        )
 
     # CHARACTER_SWITCH -> MENU: 角色切换完成
     sm.add_transition(

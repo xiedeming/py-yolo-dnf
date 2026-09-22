@@ -114,6 +114,8 @@ class SideScrollerConfig:
     attack_range: int = 100
     approach_threshold: int = 50
     attack_interval: float = 0.15
+    reference_distance: int = 150   # 像素：角色 press_sleep 对应的参考距离
+    max_hold: float = 1.2           # 单次定时按住时长上限(秒)
 
 
 # ============ DNF 专用配置 ============
@@ -159,11 +161,25 @@ class CardFlipConfig:
 
 @dataclass
 class StuckRecoveryConfig:
-    """卡住恢复配置"""
-    door_threshold: int = 5           # 卡门阈值
-    player_threshold: int = 4         # 玩家卡住阈值
-    frame_similarity_threshold: float = 0.95  # 帧相似度阈值
-    recovery_cooldown: float = 5.0    # 恢复动作冷却
+    """
+    卡住检测与分级恢复配置。
+
+    检测信号是"正在命令移动，画面却几乎不动"，而不是旧的帧直方图相似度
+    （直方图不含空间信息，且算在含 HUD 的全帧上，容易被 UI/特效干扰）。
+    """
+    # 检测
+    motion_threshold: float = 1.0     # 缩放灰度帧间平均绝对差(0-255)低于此值视为"没动"
+    stuck_frames: int = 6             # 连续多少帧没动判定卡住
+    sample_width: int = 160           # 帧差采样宽度(像素)，高度按比例
+    crop_top_ratio: float = 0.12      # 比较时忽略顶部 HUD 的比例
+    crop_bottom_ratio: float = 0.22   # 比较时忽略底部技能栏的比例
+    # 分级恢复：探测 → 动作 → 复检 → 升级
+    stage_duration: float = 0.45      # 每级恢复动作的最短观察时长(秒)
+    max_stages: int = 4               # 分级恢复的级数
+    recovery_timeout: float = 8.0     # 单次恢复总超时(秒)
+    recovery_cooldown: float = 5.0    # 恢复结束后的冷却(秒)，期间不重复触发
+    attempt_reset: float = 3.0        # 正常移动多少秒后把升级级数降回 0
+    jump_key: str = "space"           # 跳跃键
 
 
 @dataclass
@@ -195,6 +211,11 @@ class CharacterRunConfigData:
     art_time: Dict[str, float] = field(default_factory=dict)  # 技能冷却时间
     buff: List[List[str]] = field(default_factory=list)  # buff技能列表
     position: Tuple[int, int] = (0, 0)  # 保留兼容性
+    # 移动速度：系数 1.0 为基准，>1 表示更快
+    move_speed: float = 1.0
+    run_sleep: float = 0.075    # 移动延迟：最小点按/步进时长(秒)
+    press_sleep: float = 0.55   # 按键延迟：参考距离对应的按住时长(秒)
+    buff_sleep: float = 0.3
 
 
 @dataclass
@@ -215,6 +236,12 @@ class DecisionCombatConfig:
     target_priority: str = "nearest"  # nearest/weakest/strongest
     skill_strategy: str = "priority"  # priority/cooldown/custom
     use_skills: bool = True
+    # 遇到某类目标时一次释放几个技能；未列出的类别不放技能（只普攻）。
+    # 可按需补充 hero/elite/boss 等。
+    skill_count_by_class: Dict[str, int] = field(
+        default_factory=lambda: {"monster": 1, "boss-m": 2}
+    )
+    skill_trigger_interval: float = 1.0   # 技能触发节流间隔（秒）
 
 
 @dataclass
@@ -478,7 +505,9 @@ class ConfigLoader:
                 attack_key=ss_data.get('attack_key', 'x'),
                 attack_range=ss_data.get('attack_range', 100),
                 approach_threshold=ss_data.get('approach_threshold', 50),
-                attack_interval=ss_data.get('attack_interval', 0.15)
+                attack_interval=ss_data.get('attack_interval', 0.15),
+                reference_distance=ss_data.get('reference_distance', 150),
+                max_hold=ss_data.get('max_hold', 1.2)
             )
 
         # 解析角色配置
@@ -527,7 +556,11 @@ class ConfigLoader:
                 attack_key=combat_data.get('attack_key', 'space'),
                 target_priority=combat_data.get('target_priority', 'nearest'),
                 skill_strategy=combat_data.get('skill_strategy', 'priority'),
-                use_skills=combat_data.get('use_skills', True)
+                use_skills=combat_data.get('use_skills', True),
+                skill_count_by_class=combat_data.get(
+                    'skill_count_by_class', {"monster": 1, "boss-m": 2}
+                ),
+                skill_trigger_interval=combat_data.get('skill_trigger_interval', 1.0),
             )
 
         if 'items' in data:
@@ -671,12 +704,19 @@ class ConfigLoader:
 
     @staticmethod
     def _parse_stuck_recovery_config(data: Dict) -> StuckRecoveryConfig:
-        """解析卡住恢复配置"""
+        """解析卡住检测与分级恢复配置"""
         return StuckRecoveryConfig(
-            door_threshold=data.get('door_threshold', 5),
-            player_threshold=data.get('player_threshold', 4),
-            frame_similarity_threshold=data.get('frame_similarity_threshold', 0.95),
-            recovery_cooldown=data.get('recovery_cooldown', 5.0)
+            motion_threshold=data.get('motion_threshold', 1.0),
+            stuck_frames=data.get('stuck_frames', 6),
+            sample_width=data.get('sample_width', 160),
+            crop_top_ratio=data.get('crop_top_ratio', 0.12),
+            crop_bottom_ratio=data.get('crop_bottom_ratio', 0.22),
+            stage_duration=data.get('stage_duration', 0.45),
+            max_stages=data.get('max_stages', 4),
+            recovery_timeout=data.get('recovery_timeout', 8.0),
+            recovery_cooldown=data.get('recovery_cooldown', 5.0),
+            attempt_reset=data.get('attempt_reset', 3.0),
+            jump_key=data.get('jump_key', 'space'),
         )
 
     @staticmethod
@@ -720,7 +760,11 @@ class ConfigLoader:
                 art=art,
                 art_time=art_time,
                 buff=buff,
-                position=tuple(role_data.get('position', [0, 0]))
+                position=tuple(role_data.get('position', [0, 0])),
+                move_speed=role_data.get('move_speed', 1.0),
+                run_sleep=role_data.get('run_sleep', 0.075),
+                press_sleep=role_data.get('press_sleep', 0.55),
+                buff_sleep=role_data.get('buff_sleep', 0.3)
             ))
 
         return MultiCharacterConfig(

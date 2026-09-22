@@ -5,7 +5,7 @@ game:
   target_fps: 30               # 目标帧率
 
 capture:
-  method: "mss"                # 屏幕捕获方法: mss
+  method: "bettercam"          # 屏幕捕获方法: bettercam(DXGI，实测快约 6x，失败自动回退 mss) / mss
   monitor_index: 1             # 显示器索引 (1 = 主显示器)
 
 detection:
@@ -13,7 +13,7 @@ detection:
   models:
     # 主模型配置 - 修改为您的模型路径
     main:
-      path: "models/best_dxc.pt"   # 您的YOLOv8模型路径
+      path: "models/best_yolo26m.pt"   # 主模型 (YOLO26m，验证集 mAP50-95 最高)
       conf_threshold: 0.1      # 置信度阈值
       iou_threshold: 0.1      # IOU阈值
 
@@ -39,6 +39,11 @@ decision:
     target_priority: "nearest" # 目标优先级: nearest, weakest, strongest
     skill_strategy: "priority" # 技能策略: priority, cooldown, custom
     use_skills: true           # 是否使用技能
+    # 遇到某类目标时一次放几个技能；未列出的类别只普攻不放技能
+    skill_count_by_class:
+      monster: 1
+      boss-m: 2
+    skill_trigger_interval: 1.0  # 技能触发节流间隔(秒)，防止同一次遭遇瞬间倾泻
 
   items:
     collect_key: "x"           # 拾取按键
@@ -52,6 +57,8 @@ side_scroller:
   attack_range: 150            # 攻击范围(像素)
   approach_threshold: 150       # 靠近阈值(判断是否在正前方)
   attack_interval: 0.15        # 攻击间隔(秒)
+  reference_distance: 150      # 像素：角色 press_sleep 对应的参考距离
+  max_hold: 1.2                # 单次定时按住时长上限(秒)，超过则改为持续按住
 
 
 
@@ -144,12 +151,21 @@ card_flip:
   purple_priority: true       # 紫卡优先
   random_selection: true      # 无紫卡时随机选择
 
-# 卡住恢复配置
+# 卡住检测与分级恢复配置
 stuck_recovery:
-  door_threshold: 5           # door_count >= 5 判定卡门
-  player_threshold: 4         # people_count > 4 判定角色卡住
-  frame_similarity_threshold: 0.95  # 帧相似度阈值
-  recovery_cooldown: 5.0      # 恢复动作冷却时间(秒)
+  # 检测：正在按住方向键，画面却几乎没变
+  motion_threshold: 1.0       # 缩放灰度帧间平均绝对差(0-255)低于此值视为"没动"
+  stuck_frames: 6             # 连续多少帧没动判定卡住
+  sample_width: 160           # 帧差采样宽度(像素)，高度按比例
+  crop_top_ratio: 0.12        # 比较时忽略顶部 HUD 的比例
+  crop_bottom_ratio: 0.22     # 比较时忽略底部技能栏的比例
+  # 分级恢复：探测 → 动作 → 复检 → 升级（确定性升级，非随机）
+  stage_duration: 0.45        # 每级恢复动作的最短观察时长(秒)
+  max_stages: 4               # 级数: 反向脱离 / 换向绕行 / 跳跃 / 释放重试
+  recovery_timeout: 8.0       # 单次恢复总超时(秒)
+  recovery_cooldown: 5.0      # 恢复结束后的冷却时间(秒)
+  attempt_reset: 3.0          # 正常移动多少秒后把升级级数降回 0
+  jump_key: "space"           # 跳跃键
 
 # 定时调度配置
 schedule:
@@ -167,6 +183,9 @@ multi_character:
     - id: "DevilMayCry"
       name: "鬼泣"
       dungeon_runs: 16
+      move_speed: 1.0          # 移动速度系数, 1.0 基准, >1 更快(快角色调大)
+      press_sleep: 0.55        # 参考距离对应的按住时长(秒)
+      run_sleep: 0.075         # 最小点按/步进时长(秒)
       art:
         - "q"
         - "w"
@@ -197,6 +216,9 @@ multi_character:
           - "space"
     - id: "Muse"
       name: "缪斯"
+      move_speed: 1.0          # 移动速度系数, 1.0 基准, >1 更快(快角色调大)
+      press_sleep: 0.55        # 参考距离对应的按住时长(秒)
+      run_sleep: 0.075         # 最小点按/步进时长(秒)
       art:
         - - "q"
           - "w"

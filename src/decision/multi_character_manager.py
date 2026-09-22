@@ -22,8 +22,9 @@ class CharacterRunConfig:
     art: List[List[str]] = field(default_factory=list)     # 技能按键列表
     art_time: Dict[str, float] = field(default_factory=dict)  # 技能冷却时间
     buff: List[List[str]] = field(default_factory=list)    # Buff按键列表
-    run_sleep: float = 0.075              # 移动延迟
-    press_sleep: float = 0.55             # 按键延迟
+    move_speed: float = 1.0               # 移动速度系数，1.0 基准，>1 更快
+    run_sleep: float = 0.075              # 移动延迟：最小点按/步进时长(秒)
+    press_sleep: float = 0.55             # 按键延迟：参考距离对应的按住时长(秒)
     buff_sleep: float = 0.3               # Buff延迟
 
 
@@ -344,6 +345,7 @@ def create_multi_character_manager_from_config(
             art=role_data.get('art', []),
             art_time=role_data.get('art_time', {}),
             buff=role_data.get('buff', []),
+            move_speed=role_data.get('move_speed', 1.0),
             run_sleep=role_data.get('run_sleep', 0.075),
             press_sleep=role_data.get('press_sleep', 0.55),
             buff_sleep=role_data.get('buff_sleep', 0.3)

@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 logs/
+
+# TensorRT 引擎：体积大且与 GPU/驱动绑定，换卡需重建，不入库
+models/*.engine
+# ONNX 导出件可由 .pt 随时重新导出（scripts/export_cpu_onnx.py），不入库
+models/*.onnx

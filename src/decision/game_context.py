@@ -98,6 +98,9 @@ class GameContext:
         # 屏幕中心（用于计算距离）
         self.screen_center: Tuple[int, int] = (960, 540)
 
+        # 当前角色的移动速度系数，由引擎按角色写入；用于缩放像素判定阈值
+        self.movement_speed: float = 1.0
+
         # 自定义数据存储
         self._custom_data: Dict[str, Any] = {}
 
@@ -280,9 +283,11 @@ class GameContext:
         player_x = self.screen_center[0]
         enemy_x = enemy.center[0]
 
-        if enemy_x < player_x - threshold:
+        # 死区按角色速度缩放：速度快的角色一帧就能跨过固定死区，会导致方向每帧翻转、原地抖动
+        scaled = self._scaled(threshold)
+        if enemy_x < player_x - scaled:
             return 'left'
-        elif enemy_x > player_x + threshold:
+        elif enemy_x > player_x + scaled:
             return 'right'
         return 'center'
 
@@ -336,7 +341,8 @@ class GameContext:
 
         player_x = self.screen_center[0]
         door_x = door.center[0]
-        return abs(door_x - player_x) <= threshold
+        # 按速度缩放：门是宽目标，速度越快越需要更大的"够近了"窗口
+        return abs(door_x - player_x) <= self._scaled(threshold)
 
     def get_move_direction_to_target(self, target: Detection, threshold: int = 50) -> str:
         """
@@ -412,6 +418,20 @@ class GameContext:
             (point[0] - self.screen_center[0]) ** 2 +
             (point[1] - self.screen_center[1]) ** 2
         )
+
+    def set_movement_speed(self, move_speed: float) -> None:
+        """按当前角色设置移动速度系数；非法值回退到基准 1.0。"""
+        self.movement_speed = move_speed if move_speed and move_speed > 0 else 1.0
+
+    def _scaled(self, base_px: float) -> float:
+        """
+        按当前角色速度缩放像素阈值。
+
+        速度越快，判定死区越大，避免越过目标后方向来回翻转。注意**只用于移动相关的
+        判定**（方向死区、是否到达门）；攻击范围是攻击本身的属性，不能缩放，否则快角色
+        会停在自己够不到的位置，在"停/走"之间永久震荡。
+        """
+        return base_px * self.movement_speed
 
     def set_custom_data(self, key: str, value: Any) -> None:
         """设置自定义数据"""

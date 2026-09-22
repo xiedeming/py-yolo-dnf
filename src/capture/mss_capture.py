@@ -6,17 +6,10 @@ import numpy as np
 import time
 import logging
 from typing import Optional, Tuple
-from dataclasses import dataclass
+
+from .stats import CaptureStats
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class CaptureStats:
-    """捕获统计信息"""
-    fps: float = 0.0
-    frame_count: int = 0
-    last_capture_time: float = 0.0
 
 
 class MSSCapture:

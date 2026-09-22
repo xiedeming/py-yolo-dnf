@@ -4,7 +4,9 @@ from pathlib import Path
 
 import yaml
 
-from src.utils.config_loader import Config, ConfigLoader
+from src.utils.config_loader import (
+    CharacterRunConfigData, Config, ConfigLoader, SideScrollerConfig
+)
 
 
 class ConfigLoaderTests(unittest.TestCase):
@@ -58,6 +60,25 @@ class ConfigLoaderTests(unittest.TestCase):
         self.assertEqual(config.detection.models['main'], {
             'path': 'cpu.onnx', 'conf_threshold': 0.5
         })
+
+
+    def test_movement_speed_fields_parse_from_settings(self):
+        config = ConfigLoader.load(str(Path(__file__).resolve().parents[1] / 'config/settings.yaml'))
+        self.assertEqual(config.side_scroller.reference_distance, 150)
+        self.assertEqual(config.side_scroller.max_hold, 1.2)
+        role = config.multi_character.role_list[0]
+        self.assertEqual(role.move_speed, 1.0)
+        self.assertEqual(role.press_sleep, 0.55)
+        self.assertEqual(role.run_sleep, 0.075)
+
+    def test_movement_speed_defaults_when_absent(self):
+        # 旧配置没有这些字段时必须仍能加载，且回落到基准值
+        default_role = CharacterRunConfigData()
+        self.assertEqual(default_role.move_speed, 1.0)
+        self.assertEqual(default_role.press_sleep, 0.55)
+        self.assertEqual(default_role.run_sleep, 0.075)
+        self.assertEqual(SideScrollerConfig().reference_distance, 150)
+        self.assertEqual(SideScrollerConfig().max_hold, 1.2)
 
 
 if __name__ == '__main__':

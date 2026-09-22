@@ -7,16 +7,17 @@ from typing import Optional, Callable, Dict, Any
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..capture.mss_capture import MSSCapture
+from ..capture import create_capture
 from ..capture.window_manager import WindowManager
 from ..detection.detector import Detection, create_detector
 from ..control.input_controller import InputController, InputConfig
+from ..control.movement_controller import MovementController, MoveSpeedModel
 from ..decision.game_context import GameContext, GameState
 from ..decision.state_machine import StateMachine, create_game_state_machine
 from ..decision.skill_manager import SkillManager, SkillQueue, BuffManager
 from ..decision.map_navigator import MapNavigator, create_map_navigator_from_config
 from ..decision.card_flipper import CardFlipper, create_card_flipper_from_config
-from ..decision.stuck_handler import StuckHandler, StuckConfig, create_stuck_handler_from_config
+from ..decision.stuck_handler import StuckHandler, create_stuck_handler_from_config
 from ..decision.character_switcher import CharacterSwitcher, create_character_switcher_from_config
 from ..decision.multi_character_manager import MultiCharacterManager, create_multi_character_manager_from_config
 from ..selection.selector import SelectionManager
@@ -66,6 +67,30 @@ class GameEngine:
         self.logger = init_logger()
         self.logger.info("Initializing Game Engine...")
 
+        # 组件初始化前必须先声明这些占位属性：
+        # _init_components() -> _init_dnf_modules() 会读取 skill_manager，
+        # 而它只在"配置了角色"时才会被 _init_character_system() 赋值。
+        # 声明放在 _init_components() 之后会导致 multi_character 模式下直接
+        # AttributeError（之前的顺序就是这么错的）。
+        # 移动控制：把像素距离换算成按键时长，并按当前角色速度系数缩放
+        self.movement: Optional[MovementController] = None
+
+        # 技能和Buff管理
+        self.skill_manager: Optional[SkillManager] = None
+        self.skill_queue: Optional[SkillQueue] = None  # 新的技能队列
+        self.buff_manager: Optional[BuffManager] = None  # 新的Buff管理器
+        self.current_character: Optional[CharacterConfig] = None
+        self._current_role_config: Optional[Any] = None  # 当前角色配置
+
+        # DNF 专用模块
+        self.map_navigator: Optional[MapNavigator] = None
+        self.card_flipper: Optional[CardFlipper] = None
+        self.stuck_handler: Optional[StuckHandler] = None
+        self.character_switcher: Optional[CharacterSwitcher] = None
+        self.multi_char_manager: Optional[MultiCharacterManager] = None
+        self.dungeon_runner = None  # 将在所有模块初始化后创建
+        self.scheduler = None
+
         # 初始化组件
         self._init_components()
 
@@ -86,6 +111,7 @@ class GameEngine:
         self._last_enemy_direction: Optional[str] = None  # 上一次敌人方向
         self._combat_attack_count: int = 0  # 连续攻击计数
         self._max_blind_attacks: int = 10   # 丢失目标后最多盲攻次数
+        self._last_skill_cast_time: float = 0.0  # 上次按目标类型释放技能的时间（节流用）
 
         # 截图保存相关
         self._save_screenshots = self.config.debug.save_screenshots
@@ -102,29 +128,15 @@ class GameEngine:
         # 自定义动作回调
         self._state_callbacks: Dict[GameState, Callable] = {}
 
-        # 技能和Buff管理
-        self.skill_manager: Optional[SkillManager] = None
-        self.skill_queue: Optional[SkillQueue] = None  # 新的技能队列
-        self.buff_manager: Optional[BuffManager] = None  # 新的Buff管理器
-        self.current_character: Optional[CharacterConfig] = None
-        self._current_role_config: Optional[Any] = None  # 当前角色配置
-
-        # DNF 专用模块
-        self.map_navigator: Optional[MapNavigator] = None
-        self.card_flipper: Optional[CardFlipper] = None
-        self.stuck_handler: Optional[StuckHandler] = None
-        self.character_switcher: Optional[CharacterSwitcher] = None
-        self.multi_char_manager: Optional[MultiCharacterManager] = None
-        self.dungeon_runner = None  # 将在所有模块初始化后创建
-        self.scheduler = None
 
     def _init_components(self) -> None:
         """初始化所有组件"""
         # 窗口管理器
         self.window_manager = WindowManager(self.config.game.window_title)
 
-        # 屏幕捕获
-        self.capture = MSSCapture(
+        # 屏幕捕获（后端由 capture.method 决定，bettercam 失败会自动回退到 mss）
+        self.capture = create_capture(
+            method=getattr(self.config.capture, 'method', 'mss'),
             monitor_index=self.config.capture.monitor_index,
             target_fps=self.config.game.target_fps
         )
@@ -138,6 +150,19 @@ class GameEngine:
             random_delay_range=self.config.control.random_delay_range
         )
         self.controller = InputController(input_config)
+
+        # 移动控制器：像素距离 → 按键时长；方向键取 side_scroller 配置
+        # （config 用 getattr 兜底，便于用 SimpleNamespace 鸭子类型构造引擎的测试）
+        ss_config = getattr(self.config, 'side_scroller', None)
+        self.movement = MovementController(
+            self.controller,
+            MoveSpeedModel(
+                reference_distance=getattr(ss_config, 'reference_distance', 150),
+                max_hold=getattr(ss_config, 'max_hold', 1.2),
+            ),
+            left_key=getattr(ss_config, 'move_left_key', 'left'),
+            right_key=getattr(ss_config, 'move_right_key', 'right'),
+        )
 
         # 游戏上下文
         self.context = GameContext()
@@ -153,6 +178,10 @@ class GameEngine:
         self.state_machine.set_enter_action(GameState.MENU, self._on_enter_menu)
         self.state_machine.set_enter_action(GameState.PLAYING, self._on_enter_playing)
         self.state_machine.set_enter_action(GameState.COMBAT, self._on_enter_combat)
+        # 退出卡住恢复时清标记，避免 recovery_done / stuck_detected 泄漏到下一帧
+        self.state_machine.set_exit_action(
+            GameState.STUCK_RECOVERY, self._on_exit_stuck_recovery
+        )
 
         # 调试可视化
         if self.config.debug.enabled:
@@ -220,6 +249,25 @@ class GameEngine:
         else:
             self.logger.info("No character configured, using default combat")
 
+    def _apply_role_movement_config(self, role_config) -> None:
+        """
+        把当前角色的移动参数应用到速度模型与上下文阈值。
+
+        用 getattr 兜底，这样用 SimpleNamespace 鸭子类型构造的测试角色也能工作。
+        """
+        if role_config is None:
+            return
+
+        move_speed = getattr(role_config, 'move_speed', 1.0) or 1.0
+        if self.context is not None:
+            self.context.set_movement_speed(move_speed)
+        if self.movement is not None:
+            self.movement.set_speed(
+                move_speed=move_speed,
+                press_sleep=getattr(role_config, 'press_sleep', None),
+                run_sleep=getattr(role_config, 'run_sleep', None),
+            )
+
     def _init_dnf_modules(self) -> None:
         """初始化DNF专用模块"""
         # 初始化技能队列和Buff管理器
@@ -228,6 +276,7 @@ class GameEngine:
             if self.config.multi_character.role_list:
                 first_role = self.config.multi_character.role_list[0]
                 self._current_role_config = first_role
+                self._apply_role_movement_config(first_role)
 
                 # 初始化技能队列
                 self.skill_queue = SkillQueue(self.controller)
@@ -260,16 +309,14 @@ class GameEngine:
             )
             self.logger.info("Card flipper initialized")
 
-        # 初始化卡住检测处理器
+        # 初始化卡住检测与分级恢复处理器
+        # 直接把 StuckRecoveryConfig 交给它，不再用 dict 重新包一层
+        # （那正是过去 StuckConfig / StuckRecoveryConfig 两份重复配置的来源）
         if self.config.stuck_recovery:
             self.stuck_handler = create_stuck_handler_from_config(
-                {
-                    'door_threshold': self.config.stuck_recovery.door_threshold,
-                    'player_threshold': self.config.stuck_recovery.player_threshold,
-                    'frame_similarity_threshold': self.config.stuck_recovery.frame_similarity_threshold,
-                    'recovery_cooldown': self.config.stuck_recovery.recovery_cooldown
-                },
-                self.controller
+                self.config.stuck_recovery,
+                self.controller,
+                movement=self.movement,
             )
             self.logger.info("Stuck handler initialized")
 
@@ -305,12 +352,20 @@ class GameEngine:
                 'enabled': self.config.multi_character.enabled,
                 'start_name': self.config.multi_character.start_name,
                 'end_name': self.config.multi_character.end_name,
+                # 完整转发角色字段。此前只转发 4 个字段，导致 manager 造出的
+                # CharacterRunConfig 是空壳（art/art_time 缺失 → 技能队列为空）
                 'role_list': [
                     {
                         'id': role.id,
                         'name': role.name,
                         'dungeon_runs': role.dungeon_runs,
-                        'buff': role.buff  # 新格式：直接传递buff按键列表
+                        'buff': role.buff,  # 新格式：直接传递buff按键列表
+                        'art': getattr(role, 'art', []),
+                        'art_time': getattr(role, 'art_time', {}),
+                        'move_speed': getattr(role, 'move_speed', 1.0),
+                        'run_sleep': getattr(role, 'run_sleep', 0.075),
+                        'press_sleep': getattr(role, 'press_sleep', 0.55),
+                        'buff_sleep': getattr(role, 'buff_sleep', 0.3),
                     }
                     for role in self.config.multi_character.role_list
                 ]
@@ -629,7 +684,13 @@ class GameEngine:
         # 3. 更新上下文
         self.context.update(detections)
 
-        # 3.5 更新技能状态
+        # 3.5 卡住检测：必须早于状态机，转移条件才能当帧生效
+        if self.stuck_handler:
+            self.stuck_handler.observe(
+                image, self.context, self.state_machine.get_state(), self.movement
+            )
+
+        # 3.6 更新技能状态
         if self.skill_manager:
             self.skill_manager.update()
 
@@ -646,6 +707,10 @@ class GameEngine:
                 self._state_callbacks[current_state](self.context)
             except Exception as e:
                 self.logger.error(f"Error in state callback: {e}")
+
+        # 5.5 推进定时移动：到期释放方向键（替代阻塞 sleep）
+        if self.movement:
+            self.movement.update()
 
         # 6. 执行默认动作
         self._execute_action(current_state, image)
@@ -900,50 +965,81 @@ class GameEngine:
             direction = self.context.get_enemy_direction(target, ss_config.approach_threshold)
             self._last_enemy_direction = direction
 
-            # 判断距离
+            # 判断距离。注意攻击范围**不按速度缩放** —— 它是攻击本身的属性，
+            # 缩了会让快角色停在自己够不到的位置，在"停/走"之间永久震荡
             in_range = self.context.is_enemy_in_attack_range(target, attack_range)
 
             if in_range:
                 # 在攻击范围内，停止移动并攻击
-                self.controller.stop_moving()
+                self.movement.stop()
                 self._perform_attack(attack_key)
             else:
-                # 不在范围内，移动靠近敌人
-                if direction == 'left':
-                    self.controller.start_moving('left')
-                elif direction == 'right':
-                    self.controller.start_moving('right')
-                else:
-                    # 在正前方但距离不够，根据敌人X坐标判断方向
-                    if target.center[0] < self.context.screen_center[0]:
-                        self.controller.start_moving('left')
-                    else:
-                        self.controller.start_moving('right')
+                # 不在范围内：按剩余距离决定持续按住还是定时点按（近距离点按不会冲过头）
+                self._approach_target(target, ss_config.approach_threshold)
         else:
             # 没有检测到敌人
+            self.movement.stop()
             if self._last_enemy_direction and self._combat_attack_count < self._max_blind_attacks:
                 # 之前有敌人且正在攻击，继续盲攻（角色可能遮挡了怪物）
-                self.controller.stop_moving()
                 self._combat_attack_count += 1
                 self.logger.debug(f"丢失目标，继续盲攻 ({self._combat_attack_count}/{self._max_blind_attacks})")
                 self._perform_attack(attack_key)
             else:
                 # 超过盲攻次数或之前没有敌人，停止攻击
-                self.controller.stop_moving()
                 self._last_enemy_direction = None
                 self._combat_attack_count = 0
 
     def _perform_attack(self, attack_key: str) -> None:
         """执行攻击动作"""
-        # 尝试使用技能队列中的技能
-        skill_used = False
-        if self.skill_queue:
-            if self.skill_queue.use_next_skill():
-                skill_used = True
+        target = self.context.get_nearest_enemy()
 
-        # 如果没有技能可用，使用普通攻击
+        # 按目标类型释放技能（monster 1 个 / boss-m 2 个），带节流
+        skill_used = self._cast_skills_for_target(target) if target else False
+
+        # 没有技能可用时使用普通攻击
         if not skill_used:
             self.controller.key_press(attack_key)
+
+    def _cast_skills_for_target(self, target: Detection) -> bool:
+        """按目标类型释放技能。
+
+        遇到 monster 放 1 个、boss-m 放 2 个，由
+        ``config.decision.combat.skill_count_by_class`` 配置；未列出的类别不放技能。
+        实际能否放出由 SkillQueue 的冷却决定（冷却中的会被轮转跳过），
+        ``skill_trigger_interval`` 则限制触发频率，避免同一波敌人之间反复触发。
+        """
+        if not self.skill_queue:
+            return False
+
+        combat_cfg = getattr(self.config.decision, 'combat', None)
+        if combat_cfg is not None and not getattr(combat_cfg, 'use_skills', True):
+            return False
+
+        counts = getattr(combat_cfg, 'skill_count_by_class', None) or {}
+        count = counts.get(target.class_name, 0)
+        if count <= 0:
+            return False
+
+        interval = getattr(combat_cfg, 'skill_trigger_interval', 1.0)
+        now = time.time()
+        if now - self._last_skill_cast_time < interval:
+            return False
+        # 无论这次是否真的放出技能都推进节流时间，否则技能全在冷却时
+        # 会每帧轮询一遍队列
+        self._last_skill_cast_time = now
+
+        # 队列里冷却中的技能会被轮到队尾并返回 False，因此多试几轮直到凑够
+        # 数量或用完所有技能
+        cast = 0
+        for _ in range(len(self.skill_queue.skills)):
+            if cast >= count:
+                break
+            if self.skill_queue.use_next_skill():
+                cast += 1
+
+        if cast:
+            self.logger.debug(f"遇到 {target.class_name}，释放 {cast} 个技能")
+        return cast > 0
 
     def _transitioning_action(self) -> None:
         """过渡状态动作 - 移动到门并等待地图加载"""
@@ -955,18 +1051,26 @@ class GameEngine:
         # 判断是否已站在门上
         if self.context.is_player_at_door(door):
             # 站在门上，停止移动，等待加载
-            self.controller.stop_moving()
+            self.movement.stop()
             self.logger.debug("Standing at door, waiting for map transition...")
             return
 
         # 移动到门
-        ss_config = self.config.side_scroller
-        direction = self.context.get_move_direction_to_target(door, ss_config.approach_threshold)
+        self._approach_target(door, self.config.side_scroller.approach_threshold)
 
-        if direction == 'left':
-            self.controller.start_moving('left')
-        elif direction == 'right':
-            self.controller.start_moving('right')
+    def _approach_target(self, target, threshold: int) -> None:
+        """
+        朝目标靠近：按角色速度缩放的死区判断方向，按剩余距离决定持续按住还是定时点按。
+
+        `direction == 'center'` 表示已在死区内、但可能还没到"到达"判定（到达阈值更小）。
+        原实现在这种情况下什么都不做，会永久停在原地；这里按 X 坐标补一个方向继续靠近，
+        因为死区（approach_threshold）比到达阈值大，继续靠近会自然收敛而不会来回震荡。
+        """
+        direction = self.context.get_move_direction_to_target(target, threshold)
+        if direction == 'center':
+            direction = 'left' if target.center[0] < self.context.screen_center[0] else 'right'
+        gap = abs(target.center[0] - self.context.screen_center[0])
+        self.movement.approach(direction, gap)
 
     def _get_attack_key(self) -> str:
         """获取攻击按键"""
@@ -980,25 +1084,19 @@ class GameEngine:
         """游玩动作 - 横版游戏版本"""
         # 如果有敌人，停止移动（等待下一帧进入COMBAT状态）
         if self.context.has_enemies():
-            self.controller.stop_moving()
+            self.movement.stop()
             return
 
         # 如果有门，移动到门那边
         if self.context.has_door():
-            door = self.context.get_door()
-            ss_config = self.config.side_scroller
-            direction = self.context.get_move_direction_to_target(door, ss_config.approach_threshold)
-
-            if direction == 'left':
-                self.controller.start_moving('left')
-            elif direction == 'right':
-                self.controller.start_moving('right')
-            else:
-                self.controller.stop_moving()
+            self._approach_target(
+                self.context.get_door(),
+                self.config.side_scroller.approach_threshold
+            )
             return
 
-        # 如果没有敌人和门，向右移动寻找
-        self.controller.start_moving('right')
+        # 如果没有敌人和门，向右持续移动搜索
+        self.movement.hold('right')
         self.logger.debug("No enemies or door detected, moving right to search...")
 
     def _dead_action(self) -> None:
@@ -1094,6 +1192,7 @@ class GameEngine:
         if current_index < len(role_list):
             role_config = role_list[current_index]
             self._current_role_config = role_config
+            self._apply_role_movement_config(role_config)
 
             # 重置并加载技能队列
             if self.skill_queue:
@@ -1108,18 +1207,23 @@ class GameEngine:
                 self.logger.info(f"已加载角色 {role_config.name} 的Buff: {len(role_config.buff)} 个")
 
     def _stuck_recovery_action(self) -> None:
-        """卡住恢复动作"""
+        """
+        卡住恢复动作 —— 每帧推进一级分级恢复（探测 → 动作 → 复检 → 升级）。
+
+        注意 `recovery_done` 现在只由 handler 在恢复真正结束时设置。原实现无条件置位，
+        即使因冷却没执行任何动作也会立刻弹回原状态。
+        """
         if self.stuck_handler:
-            from ..decision.stuck_handler import StuckType
+            self.stuck_handler.step_recovery(self.context, self.movement)
 
-            if self.context.is_door_stuck():
-                self.stuck_handler.execute_recovery(StuckType.DOOR_STUCK, self.context)
-                self.logger.info("Door stuck recovery executed")
-            elif self.context.is_player_stuck():
-                self.stuck_handler.execute_recovery(StuckType.PLAYER_STUCK, self.context)
-                self.logger.info("Player stuck recovery executed")
-
-            self.context.set_custom_data('recovery_done', True)
+    def _on_exit_stuck_recovery(self) -> None:
+        """退出卡住恢复状态：清掉标记，避免泄漏到下一帧重复触发。"""
+        if self.movement:
+            self.movement.stop()
+        if self.stuck_handler:
+            self.stuck_handler.end_session()
+        self.context.set_custom_data('recovery_done', False)
+        self.context.set_custom_data('stuck_detected', False)
 
     def _buffing_action(self) -> None:
         """释放Buff动作"""
@@ -1257,6 +1361,9 @@ class GameEngine:
         """暂停引擎"""
         self._paused = True
         self.controller.release_all_inputs()
+        # 同步清空移动状态，否则 is_moving() 会继续报告"正在移动"
+        if self.movement:
+            self.movement.stop()
         self.logger.info("Engine paused")
 
     def resume(self) -> None:
@@ -1271,6 +1378,8 @@ class GameEngine:
         self._stop_requested = True
         self._stop_hotkey_listener()
         self.controller.release_all_inputs()
+        if self.movement:
+            self.movement.stop()
 
         # 停止技能队列线程
         if self.skill_queue:

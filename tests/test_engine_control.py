@@ -66,7 +66,8 @@ def load_engine():
     add_module("src", __path__=[])
     add_module("src.core", __path__=[])
     add_module("src.core.dungeon_runner", create_dungeon_runner_from_config=lambda *args, **kwargs: None)
-    add_module("src.capture", __path__=[])
+    # engine.py 通过 create_capture 工厂创建捕获后端，因此这里也要提供该入口
+    add_module("src.capture", __path__=[], create_capture=lambda *args, **kwargs: object())
     add_module("src.detection", __path__=[])
     add_module("src.control", __path__=[])
     add_module("src.decision", __path__=[])
@@ -115,6 +116,7 @@ def load_engine():
         create_detector=create_fake_detector,
     )
     add_module("src.control.input_controller", InputController=object, InputConfig=object)
+    add_module("src.control.movement_controller", MovementController=object, MoveSpeedModel=object)
     add_module("src.decision.game_context", GameContext=object, GameState=object)
     add_module("src.decision.state_machine", StateMachine=object, create_game_state_machine=lambda: None)
     add_module("src.decision.skill_manager", SkillManager=object, SkillQueue=FakeQueue, BuffManager=FakeBuffManager)
@@ -256,6 +258,7 @@ class GameEngineTests(unittest.TestCase):
                 pass
 
         controller = Controller()
+        movement_stops = []
         engine = GameEngine.__new__(GameEngine)
         engine.controller = controller
         engine.logger = Logger()
@@ -265,6 +268,8 @@ class GameEngineTests(unittest.TestCase):
         engine.capture = types.SimpleNamespace(close=lambda: None)
         engine.visualizer = None
         engine._opencv_gui_available = False
+        # pause/stop 除释放按键外，还要清空移动状态，否则 is_moving() 会继续撒谎
+        engine.movement = types.SimpleNamespace(stop=lambda: movement_stops.append(1))
 
         engine.pause()
         engine.stop()
@@ -272,6 +277,7 @@ class GameEngineTests(unittest.TestCase):
         self.assertTrue(engine._paused)
         self.assertFalse(engine._running)
         self.assertEqual(controller.release_calls, 2)
+        self.assertEqual(len(movement_stops), 2)
 
     def test_single_model_passes_all_detector_options(self):
         GameEngine, FakeDetector = load_engine()
@@ -342,6 +348,9 @@ class GameEngineTests(unittest.TestCase):
         engine.stuck_handler = None
         engine.character_switcher = None
         engine.multi_char_manager = None
+        # _apply_role_movement_config 会写这两个对象
+        engine.context = types.SimpleNamespace(set_movement_speed=lambda *_: None)
+        engine.movement = types.SimpleNamespace(set_speed=lambda **_: None)
 
         dungeon_runner = types.ModuleType("src.core.dungeon_runner")
         dungeon_runner.create_dungeon_runner_from_config = lambda *args, **kwargs: None
@@ -370,6 +379,9 @@ class GameEngineTests(unittest.TestCase):
         engine.visualizer = None
         engine._save_screenshots = False
         engine.logger = types.SimpleNamespace(debug=lambda *_: None, error=lambda *_: None)
+        # _process_frame 里的卡住检测与定时移动推进钩子
+        engine.stuck_handler = None
+        engine.movement = None
 
         engine._process_frame()
 
