@@ -139,7 +139,19 @@ class DungeonConfig:
     collect_items: bool = True        # 自动拾取
     menu_detect_threshold: int = 180  # menu连续检测次数阈值
     menu_timeout_seconds: Optional[float] = None
-    character_button_pos: Tuple[int, int] = (960, 540)  # 选择角色按钮位置
+    character_button_pos: Optional[Tuple[int, int]] = None  # 「选择角色」按钮位置；OCR 检出时的兜底，None=不兜底
+    # ---- 通关提示（右上角「是否继续?」）处理 ----
+    # 该提示有 再次挑战(F10) / 选择其它地下城(F11) / 返回城镇(F12) 三个选项。
+    continue_key: str = "f10"            # 继续刷同一张图的按键
+    gather_key: str = "tab"              # 聚集掉落按键（进入提示时先按一次）
+    prompt_advance_delay: float = 1.2    # 进提示后等多久再按继续键(秒)，留给聚集掉落动画
+    prompt_retry_interval: float = 1.5   # 提示未消失时的重按间隔(秒)
+    prompt_max_retries: int = 3          # 重按上限，超过则按 ESC 兜底自愈
+    # ---- 地下城（白图）流程 ----
+    path_planner: str = "rightward"      # rightward(默认) / minimap(朝小地图上的 BOSS 推进)
+    path_planner_region: Optional[List[float]] = None  # minimap 的小地图区域 (x,y,w,h 比例)
+    room_clear_frames: int = 8           # 连续多少帧没有怪才算本间清空
+    room_change_motion: float = 25.0     # 推进中帧差超过此值视为进入新房间
 
 
 @dataclass
@@ -668,7 +680,7 @@ class ConfigLoader:
     @staticmethod
     def _parse_dungeon_config(data: Dict) -> DungeonConfig:
         """解析副本配置"""
-        char_button_pos = data.get('character_button_pos', [960, 540])
+        char_button_pos = data.get('character_button_pos')
         return DungeonConfig(
             mode=data.get('mode', 'white_map'),
             max_runs=data.get('max_runs', 16),
@@ -677,7 +689,16 @@ class ConfigLoader:
             collect_items=data.get('collect_items', True),
             menu_detect_threshold=data.get('menu_detect_threshold', 180),
             menu_timeout_seconds=data.get('menu_timeout_seconds'),
-            character_button_pos=tuple(char_button_pos) if isinstance(char_button_pos, list) else char_button_pos
+            character_button_pos=tuple(char_button_pos) if isinstance(char_button_pos, list) else char_button_pos,
+            continue_key=data.get('continue_key', 'f10'),
+            gather_key=data.get('gather_key', 'tab'),
+            prompt_advance_delay=data.get('prompt_advance_delay', 1.2),
+            prompt_retry_interval=data.get('prompt_retry_interval', 1.5),
+            prompt_max_retries=data.get('prompt_max_retries', 3),
+            path_planner=data.get('path_planner', 'rightward'),
+            path_planner_region=data.get('path_planner_region'),
+            room_clear_frames=data.get('room_clear_frames', 8),
+            room_change_motion=data.get('room_change_motion', 25.0),
         )
 
     @staticmethod

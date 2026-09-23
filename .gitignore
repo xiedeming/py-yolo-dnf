@@ -16,3 +16,5 @@ data/screenshots/
 models/*.engine
 # ONNX 导出件可由 .pt 随时重新导出（scripts/export_cpu_onnx.py），不入库
 models/*.onnx
+# 校准参考截图（BMP 伪装成 .png，~20MB），不入库
+0a42efd2-*.png

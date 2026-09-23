@@ -30,4 +30,6 @@ colorama>=0.4.6
 # numba>=0.58.0
 
 # OCR (RapidOCR - ONNX based, no Paddle dependency)
-rapidocr-onnxruntime>=1.3.0
+# 注意：旧的 rapidocr-onnxruntime 声明 requires_python<3.13，在 3.14 上装不了；
+# rapidocr v3 是继任包（API 已适配，见 src/detection/ocr_detector.py）
+rapidocr>=3.0.0

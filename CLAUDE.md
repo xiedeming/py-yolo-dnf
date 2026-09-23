@@ -140,6 +140,79 @@ DXGI 只在画面变化时交付新帧，`BetterCamCapture` 会复用上一帧�
 
 回归测试：`tests/test_skill_trigger.py`。
 
+### 通关提示与角色切换
+
+副本通关后右上角会出现「是否继续?」提示（检测类别 `menu`）：
+
+```
+是否继续?
+  再次挑战 (F10)
+  选择其它地下城 (F11)
+  返回城镇 (F12)
+```
+
+`engine._menu_action` 负责处理它：
+
+1. 进入 MENU 状态时 `_on_enter_menu` 按 `dungeon.gather_key`（默认 Tab）**聚集掉落**
+2. 等 `prompt_advance_delay`（默认 1.2s）让动画走完
+3. 按 `dungeon.continue_key`（默认 F10 再次挑战）继续刷同一张图，**刷图计数 +1**
+4. 提示反复关不掉就重试，超过 `prompt_max_retries` 按 ESC 兜底自愈
+
+**切角色只由刷图次数决定**：`dungeon_run_count >= dungeon.max_runs` 时才切换。
+这里原本还有一条「menu 连续检测超时 → 切角色」的路径 —— 但该提示每次通关都会出现，
+只要没被及时关掉就会在 6 秒后误触发切角色（刷图次数根本没到），已移除。
+注意 `dungeon_run_count` 过去只在死代码 `dungeon_runner.py` 里递增，主循环从不计数，
+所以这条触发实际上从未生效；现在由 `_menu_action` 在按继续键时递增。
+
+**「选择角色」按钮定位**：优先用 OCR（`rapidocr`）在当前截图里找「选择角色 / 角色选择」；
+找不到才回退到 `dungeon.character_button_pos`；**两者都没有就如实返回失败**，
+绝不盲点屏幕中央（原先硬编码点 (960,540) 且无条件返回 True，是「切换几乎总是失败」的直接原因）。
+切换失败会把刷图计数清零，避免每帧重试形成活锁。
+
+**OCR 依赖**：旧包 `rapidocr-onnxruntime` 声明 `requires_python<3.13`，在 3.14 上装不了，
+已改用继任包 `rapidocr` v3。两者 API 不同（v3 返回 `RapidOCROutput(.boxes/.txts/.scores)`，
+v1 返回 `(result, elapse)`），`src/detection/ocr_detector.py` 对两个版本都做了适配。
+
+回归测试：`tests/test_cpu_runtime.py`（提示推进 + 误触守卫）。
+
+### 地下城（白图）流程
+
+`dungeon.mode` 决定走哪套流程。**注意**：这个字段过去只被死代码 `dungeon_runner.py` 读取，
+主循环是状态机驱动的，所以模式其实一直没生效。
+
+| mode | 行为 |
+|------|------|
+| `new_abyss` / `abyss` | 深渊：没有房间网格，`dungeon_flow` 为 `None`，行为与原来完全一致 |
+| `white_map` / `dungeon` | 白图/地下城：启用 `DungeonFlow` 做房间推进 |
+
+完整流程：进图 → 往右走 → 打怪 → 找门 → 循环 → BOSS房 → 打BOSS → 翻牌 → tab聚物 →
+再来一次 → 到次数/无法再来 → 切角色。
+
+其中**只有「房间」这一层**由 `src/decision/dungeon_flow.py` 负责：清怪 / 该推进 / BOSS房
+三态、房间计数、以及"该往哪走"。通关提示之后的环节由 `engine._menu_action` 与切换流程负责。
+
+**当前可用的信号**：`monster` / `boss-m` 检测、画面大幅变化（复用 `stuck_handler` 的帧差工具）。
+
+**暂缺的信号 —— 这是流程能否真正跑起来的关键**：
+
+| 信号 | 用途 | 现状 |
+|------|------|------|
+| `door` | 找门 | 模型检不出：现训练集 door 标注数为 0，原 11 类数据集已丢失 |
+| 小地图 | 规划通往 BOSS 的路径 | 现有截图全是深渊场景，画面里没有小地图，无法确定其区域与格子特征 |
+
+所以「往哪走」交给 `PathPlanner`（`src/decision/path_planner.py`）：
+
+- `dungeon.path_planner: rightward` —— **现在可用**，一直向右推进，适合线性地图
+- `dungeon.path_planner: minimap` —— **已实现**：朝小地图上 BOSS 的方向推进。
+  从当前帧裁出小地图面板（右上角，区域按画布比例），用 HSV 颜色阈值分别找
+  玩家房间标记（青色竖条）和 BOSS 标记（红角），在位移更大的轴上朝 BOSS 移动。
+  对梯子型房间布局有效；走廊绕行时可能暂时到不了一墙之隔的房间，但推进会停滞，
+  由卡住检测兜底。**这是方向性推进，不是沿走廊的完整图搜索**。
+  区域与颜色从 `0a42efd2-5de9-11f0-9038-58cdc9c702c6.png`（1920×1200 实拍）校准，
+  通过比例定位适配其它分辨率。`path_planner_region` 可覆盖默认区域。
+
+回归测试：`tests/test_dungeon_flow.py`。
+
 ### Key Classes
 
 ```python

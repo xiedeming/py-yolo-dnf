@@ -204,7 +204,7 @@ class CharacterSwitcher:
 
     def execute_return_to_character_selection(
         self,
-        character_button_position: Tuple[int, int],
+        character_button_position: Optional[Tuple[int, int]] = None,
         current_image: Optional[np.ndarray] = None,
         context: Optional['GameContext'] = None
     ) -> bool:
@@ -255,7 +255,7 @@ class CharacterSwitcher:
             time.sleep(0.3)  # 等待界面加载
 
             # Step 4: 获取截图，使用OCR检测"选择角色"按钮位置
-            button_pos = character_button_position  # 默认使用配置的位置
+            button_pos = None
 
             if self.capture and self.window_manager:
                 # 获取新截图
@@ -267,11 +267,27 @@ class CharacterSwitcher:
                         button_pos = pos
                         logger.info(f"OCR检测到'{text}'按钮位置: {button_pos}")
                     else:
-                        logger.warning(f"OCR未检测到'选择角色'按钮，使用默认位置: {button_pos}")
+                        logger.warning("OCR未检测到'选择角色'按钮")
                 else:
-                    logger.warning("获取截图失败，使用默认按钮位置")
+                    logger.warning("获取截图失败")
             else:
-                logger.debug("capture或window_manager未设置，使用默认按钮位置")
+                logger.debug("capture或window_manager未设置，无法使用OCR定位按钮")
+
+            # OCR 没找到时才回退到配置坐标；两者都没有就**如实失败**。
+            # 原来这里会盲点屏幕中央 (960,540) 并返回 True —— 那既点不到按钮，
+            # 又让调用方以为切换成功，是"几乎每次都切不过去"的直接原因。
+            if button_pos is None:
+                if character_button_position:
+                    button_pos = tuple(character_button_position)
+                    logger.warning(
+                        f"OCR未检出按钮，回退到配置坐标 {button_pos}（建议校准 character_button_pos）"
+                    )
+                else:
+                    logger.error(
+                        "无法定位'选择角色'按钮：OCR 未检出，且未配置 character_button_pos，中止切换"
+                    )
+                    self.state = SwitchState.IDLE
+                    return False
 
             # Step 5: 移动鼠标到选择角色按钮位置
             logger.debug(f"移动鼠标到选择角色按钮: {button_pos}")

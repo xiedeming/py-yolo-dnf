@@ -117,12 +117,20 @@ def load_engine():
     )
     add_module("src.control.input_controller", InputController=object, InputConfig=object)
     add_module("src.control.movement_controller", MovementController=object, MoveSpeedModel=object)
-    add_module("src.decision.game_context", GameContext=object, GameState=object)
+    # GameState 是纯枚举、没有依赖，直接用真实实现。
+    # stub 成 object 会让 _execute_action 的状态分发（state == GameState.COMBAT）
+    # 直接抛 AttributeError —— 任何走到分发的测试都会踩到。
+    from src.decision.game_context import GameState as _RealGameState
+
+    add_module("src.decision.game_context", GameContext=object, GameState=_RealGameState)
     add_module("src.decision.state_machine", StateMachine=object, create_game_state_machine=lambda: None)
     add_module("src.decision.skill_manager", SkillManager=object, SkillQueue=FakeQueue, BuffManager=FakeBuffManager)
     add_module("src.decision.map_navigator", MapNavigator=object, create_map_navigator_from_config=lambda *args: None)
     add_module("src.decision.card_flipper", CardFlipper=object, create_card_flipper_from_config=lambda *args: None)
     add_module("src.decision.stuck_handler", StuckHandler=object, StuckConfig=object, create_stuck_handler_from_config=lambda *args: None)
+    add_module("src.decision.dungeon_flow", DungeonFlow=object)
+    add_module("src.decision.path_planner", create_path_planner=lambda *args, **kwargs: None,
+               PathPlanner=object, RightwardPlanner=object)
     add_module("src.decision.character_switcher", CharacterSwitcher=object, create_character_switcher_from_config=lambda *args, **kwargs: None)
     add_module("src.decision.multi_character_manager", MultiCharacterManager=object, create_multi_character_manager_from_config=lambda *args, **kwargs: None)
     add_module("src.selection.selector", SelectionManager=object)
@@ -260,6 +268,7 @@ class GameEngineTests(unittest.TestCase):
         controller = Controller()
         movement_stops = []
         engine = GameEngine.__new__(GameEngine)
+        engine.dungeon_flow = None
         engine.controller = controller
         engine.logger = Logger()
         engine._paused = False
@@ -282,6 +291,7 @@ class GameEngineTests(unittest.TestCase):
     def test_single_model_passes_all_detector_options(self):
         GameEngine, FakeDetector = load_engine()
         engine = GameEngine.__new__(GameEngine)
+        engine.dungeon_flow = None
         engine.config = types.SimpleNamespace(
             detection=types.SimpleNamespace(
                 device="cpu",
@@ -325,6 +335,7 @@ class GameEngineTests(unittest.TestCase):
             buff=[],
         )
         engine = GameEngine.__new__(GameEngine)
+        engine.dungeon_flow = None
         engine.controller = object()
         engine.capture = object()
         engine.window_manager = object()
@@ -363,6 +374,7 @@ class GameEngineTests(unittest.TestCase):
         GameEngine, _ = load_engine()
         next_state = object()
         engine = GameEngine.__new__(GameEngine)
+        engine.dungeon_flow = None
         engine.window_manager = types.SimpleNamespace(get_client_screen_rect=lambda: (0, 0, 1, 1))
         engine.capture = types.SimpleNamespace(capture_region=lambda _: types.SimpleNamespace(shape=(1, 1)))
         engine.detector = None
@@ -392,6 +404,7 @@ class GameEngineTests(unittest.TestCase):
         keys = iter((ord("p"), ord("q")))
         GameEngine._main_loop.__globals__["cv2"].waitKey = lambda _: next(keys)
         engine = GameEngine.__new__(GameEngine)
+        engine.dungeon_flow = None
         engine.config = types.SimpleNamespace(game=types.SimpleNamespace(target_fps=0))
         engine.logger = types.SimpleNamespace(info=lambda *_: None, debug=lambda *_: None)
         engine.window_manager = types.SimpleNamespace(
@@ -422,6 +435,7 @@ class EnsureGameFocusTests(unittest.TestCase):
     def _engine(self, foreground):
         GameEngine, _ = load_engine()
         engine = GameEngine.__new__(GameEngine)
+        engine.dungeon_flow = None
         engine.logger = types.SimpleNamespace(debug=lambda *_: None)
         calls = []
         engine.window_manager = types.SimpleNamespace(

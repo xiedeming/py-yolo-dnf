@@ -117,12 +117,29 @@ logging:
 # 副本配置
 dungeon:
   mode: "new_abyss"           # abyss(深渊), white_map(白图), new_abyss(新深渊)
-  max_runs: 16                # 每个角色最大刷图次数
+  max_runs: 16                # 每个角色最大刷图次数（刷满后才切角色）
   auto_sell: false            # 自动卖装备
   sell_after_runs: 5          # 刷图多少次后卖装备
   collect_items: true         # 自动拾取
-  menu_detect_threshold: 180  # menu连续检测次数超过此值触发角色切换
-  character_button_pos: [960, 540]  # 选择角色按钮位置 (x, y)，需要根据实际分辨率调整
+  menu_detect_threshold: 180  # menu 连续检测次数阈值（仅用于日志/诊断，不再触发切角色）
+  # 「选择角色」按钮坐标，仅在 OCR 检不出按钮时作为兜底。
+  # 留空/注释掉 = 不兜底：OCR 找不到就如实报失败，绝不盲点屏幕中央。
+  # character_button_pos: [960, 540]
+  # ---- 通关提示（右上角「是否继续?」）处理 ----
+  # 该提示有 再次挑战(F10) / 选择其它地下城(F11) / 返回城镇(F12) 三个选项
+  continue_key: "f10"         # 继续刷同一张图的按键
+  gather_key: "tab"           # 聚集掉落按键（进入提示时先按一次）
+  prompt_advance_delay: 1.2   # 进提示后等多久再按继续键(秒)，留给聚集掉落动画
+  prompt_retry_interval: 1.5  # 提示未消失时的重按间隔(秒)
+  prompt_max_retries: 3       # 重按上限，超过则按 ESC 兜底自愈
+  # ---- 地下城（白图）流程 ----
+  # 门暂时拿不到（模型检不出 door），"清完一间往哪走"默认向右；
+  # minimap 模式朝小地图上的 BOSS 方向推进（右上角面板，检测青色玩家标记与红色 BOSS 标记）。
+  path_planner: "rightward"   # rightward(默认) / minimap(朝小地图上的 BOSS 推进)
+  # minimap 时小地图的区域 (x,y,w,h 比例)，留空用默认校准值。
+  # path_planner_region: [0.9, 0.02, 0.10, 0.09]
+  room_clear_frames: 8        # 连续多少帧没有怪才算本间清空
+  room_change_motion: 25.0    # 推进中帧差超过此值视为进入新房间
 
 # OCR配置 (基于RapidOCR/ONNX Runtime)
 ocr:

@@ -18,6 +18,8 @@ from ..decision.skill_manager import SkillManager, SkillQueue, BuffManager
 from ..decision.map_navigator import MapNavigator, create_map_navigator_from_config
 from ..decision.card_flipper import CardFlipper, create_card_flipper_from_config
 from ..decision.stuck_handler import StuckHandler, create_stuck_handler_from_config
+from ..decision.dungeon_flow import DungeonFlow
+from ..decision.path_planner import create_path_planner
 from ..decision.character_switcher import CharacterSwitcher, create_character_switcher_from_config
 from ..decision.multi_character_manager import MultiCharacterManager, create_multi_character_manager_from_config
 from ..selection.selector import SelectionManager
@@ -86,6 +88,8 @@ class GameEngine:
         self.map_navigator: Optional[MapNavigator] = None
         self.card_flipper: Optional[CardFlipper] = None
         self.stuck_handler: Optional[StuckHandler] = None
+        # 地下城（白图）流程：房间推进 + 路径规划。深渊模式下为 None
+        self.dungeon_flow: Optional[DungeonFlow] = None
         self.character_switcher: Optional[CharacterSwitcher] = None
         self.multi_char_manager: Optional[MultiCharacterManager] = None
         self.dungeon_runner = None  # 将在所有模块初始化后创建
@@ -119,6 +123,10 @@ class GameEngine:
         self._screenshot_dir.mkdir(parents=True, exist_ok=True)
         self._last_screenshot_time: float = 0.0
         self._menu_detect_started_at: Optional[float] = None
+        # 通关提示（是否继续?）的推进状态
+        self._prompt_attempts: int = 0
+        self._prompt_last_press_at: Optional[float] = None
+        self._switch_failures: int = 0
         # 配置中是帧数，转换为秒数
         target_fps = self.config.game.target_fps if self.config.game.target_fps > 0 else 30
         self._screenshot_interval: float = self.config.debug.screenshot_interval / target_fps
@@ -170,6 +178,9 @@ class GameEngine:
         # 设置菜单检测阈值（从配置读取）
         if self.config.dungeon:
             self.context.menu_detect_threshold = self.config.dungeon.menu_detect_threshold
+            # 刷图次数上限也必须从配置读 —— 之前一直是 dataclass 默认值 16，
+            # 与 config 里的 max_runs 脱钩
+            self.context.max_dungeon_runs = self.config.dungeon.max_runs
 
         # 状态机
         self.state_machine = create_game_state_machine()
@@ -376,6 +387,20 @@ class GameEngine:
                 self.character_switcher
             )
             self.logger.info("Multi-character manager initialized")
+
+        # 地下城（白图）流程：只有白图/地下城模式才需要"一间一间推进"。
+        # 深渊模式没有房间网格，保持原有行为（dungeon_flow 为 None）。
+        mode = getattr(self.config.dungeon, 'mode', '') if self.config.dungeon else ''
+        if mode in ('white_map', 'dungeon'):
+            region = None
+            if self.config.dungeon.path_planner_region:
+                region = tuple(self.config.dungeon.path_planner_region)
+            self.dungeon_flow = DungeonFlow(
+                room_clear_frames=self.config.dungeon.room_clear_frames,
+                room_change_motion=self.config.dungeon.room_change_motion,
+                planner=create_path_planner(self.config.dungeon.path_planner, region=region),
+            )
+            self.logger.info(f"地下城流程已启用 (path_planner={self.config.dungeon.path_planner})")
 
         # 初始化副本运行器
         from .dungeon_runner import create_dungeon_runner_from_config
@@ -863,7 +888,7 @@ class GameEngine:
 
     def _execute_action(self, state: GameState, image=None) -> None:
         """执行状态对应的动作"""
-        # 检测菜单并更新计数。低配配置可用真实秒数，避免检测频率变化改变超时语义。
+        # 检测菜单（右上角「是否继续?」通关提示）并更新计数
         has_menu = self.context.has_menu()
         if has_menu:
             self.context.increment_menu_detect()
@@ -873,38 +898,22 @@ class GameEngine:
             self.context.reset_menu_detect()
             self._menu_detect_started_at = None
 
-        timeout_seconds = getattr(self.config.dungeon, 'menu_timeout_seconds', None)
-        menu_timeout = (
-            has_menu and self._menu_detect_started_at is not None and
-            timeout_seconds is not None and
-            time.monotonic() - self._menu_detect_started_at >= timeout_seconds
-        )
-        if timeout_seconds is None:
-            menu_timeout = has_menu and self.context.is_menu_detect_timeout()
+        # 地下城流程：更新房间状态（清怪 / 该推进 / BOSS房）
+        if self.dungeon_flow is not None and image is not None:
+            self.dungeon_flow.observe(self.context, image)
 
-        # 检查菜单检测是否超时（单独处理）
-        if menu_timeout:
+        # 切角色只由"刷满 max_runs"决定。
+        # 这里原本还有一条"menu 连续检测超时 → 切角色"的路径：但该提示每次通关都会出现，
+        # 只要没被及时关掉就会在 6 秒后误触发切角色（刷图次数根本没到）。现在提示的处理
+        # 交给 _menu_action（按继续键推进 + 重试 + ESC 自愈）。
+        if has_menu and self.context.should_switch_character():
+            self.logger.info(
+                f"刷图达到上限，切换角色: "
+                f"{self.context.dungeon_run_count}/{self.context.max_dungeon_runs}"
+            )
             if self.character_switcher:
-                # 启用了多角色模式，执行角色切换
-                self.logger.info(f"菜单检测超时，触发角色切换...")
                 self._execute_character_switch_flow(image)
             else:
-                # 未启用多角色模式，尝试按Tab键恢复
-                self.logger.warning("菜单检测超时，尝试按Tab键恢复...")
-                self.controller.key_press('tab')
-                self.context.reset_menu_detect()
-                self._menu_detect_started_at = None
-            return
-
-        # 检查是否需要切换角色（刷图次数达到上限）
-        if self.context.should_switch_character() and has_menu:
-            self.logger.info(f"触发角色切换条件: 刷图次数={self.context.dungeon_run_count}/{self.context.max_dungeon_runs}")
-
-            if self.character_switcher:
-                # 启用了多角色模式，执行角色切换
-                self._execute_character_switch_flow(image)
-            else:
-                # 未启用多角色模式，停止程序
                 self.logger.success(f"已完成 {self.context.dungeon_run_count} 次刷图，程序结束")
                 self._running = False
             return
@@ -912,7 +921,9 @@ class GameEngine:
         if state == GameState.COMBAT:
             self._combat_action_side_scroller()
         elif state == GameState.PLAYING:
-            self._playing_action()
+            self._playing_action(image)
+        elif state == GameState.MENU:
+            self._menu_action()
         elif state == GameState.TRANSITIONING:
             self._transitioning_action()
         elif state == GameState.DEAD:
@@ -925,6 +936,57 @@ class GameEngine:
             self._stuck_recovery_action()
         elif state == GameState.BUFFING:
             self._buffing_action()
+
+    def _menu_action(self) -> None:
+        """
+        通关提示（右上角「是否继续?」）的处理。
+
+        进入 MENU 时 `_on_enter_menu` 已经按过 gather_key 聚集掉落，这里等动画走完再按
+        continue_key（再次挑战）继续刷同一张图，并把刷图计数 +1。提示反复关不掉就重试，
+        超过上限按 ESC 兜底自愈 —— 而不是像以前那样靠"停留太久"去切角色。
+        """
+        dungeon_cfg = self.config.dungeon
+        now = time.monotonic()
+
+        # 让聚集掉落的动画走完
+        entered_at = self._menu_detect_started_at
+        if entered_at is None or now - entered_at < dungeon_cfg.prompt_advance_delay:
+            return
+
+        # 刚按过键，先等提示消失
+        if (self._prompt_last_press_at is not None and
+                now - self._prompt_last_press_at < dungeon_cfg.prompt_retry_interval):
+            return
+
+        if self._prompt_attempts >= dungeon_cfg.prompt_max_retries:
+            # 反复按继续键都关不掉提示 → ESC 兜底自愈，并重新计时
+            self.logger.warning(
+                f"通关提示连续 {self._prompt_attempts} 次未消失，按 ESC 兜底自愈"
+            )
+            self.controller.key_press('escape')
+            self._prompt_attempts = 0
+            self._prompt_last_press_at = now
+            self._menu_detect_started_at = now
+            return
+
+        self.controller.key_press(dungeon_cfg.continue_key)
+        self._prompt_last_press_at = now
+        self._prompt_attempts += 1
+
+        # 只有第一次按键才算"刷完一张图"，重试不重复计数
+        if self._prompt_attempts == 1:
+            self.context.increment_dungeon_run()
+            # 新的一轮开始：重置房间推进状态
+            if self.dungeon_flow is not None:
+                self.dungeon_flow.start_new_run()
+            self.logger.info(
+                f"继续刷图 {self.context.dungeon_run_count}/{self.context.max_dungeon_runs}"
+                f"（按 {dungeon_cfg.continue_key}）"
+            )
+        else:
+            self.logger.debug(
+                f"通关提示仍在，重试 {self._prompt_attempts}/{dungeon_cfg.prompt_max_retries}"
+            )
 
     def _combat_action(self) -> None:
         """战斗动作 - 原始鼠标版本（保留兼容）"""
@@ -1090,7 +1152,7 @@ class GameEngine:
             return self.config.decision.combat.attack_key
         return "space"  # 默认
 
-    def _playing_action(self) -> None:
+    def _playing_action(self, image=None) -> None:
         """游玩动作 - 横版游戏版本"""
         # 如果有敌人，停止移动（等待下一帧进入COMBAT状态）
         if self.context.has_enemies():
@@ -1105,9 +1167,13 @@ class GameEngine:
             )
             return
 
-        # 如果没有敌人和门，向右持续移动搜索
-        self.movement.hold('right')
-        self.logger.debug("No enemies or door detected, moving right to search...")
+        # 没有敌人和门：朝下一间的方向推进
+        # （地下城流程由 PathPlanner 决定方向，默认向右；深渊模式下也是向右）
+        direction = 'right'
+        if self.dungeon_flow is not None:
+            direction = self.dungeon_flow.advance_direction(self.context, image)
+        self.movement.hold(direction)
+        self.logger.debug(f"无敌人/门，朝 {direction} 推进")
 
     def _dead_action(self) -> None:
         """死亡动作"""
@@ -1150,14 +1216,15 @@ class GameEngine:
             self.logger.warning("CharacterSwitcher 未初始化")
             return
 
-        # 获取选择角色按钮位置
-        char_button_pos = (960, 540)  # 默认位置
-        if self.config.dungeon and self.config.dungeon.character_button_pos:
-            char_button_pos = self.config.dungeon.character_button_pos
+        # 「选择角色」按钮位置：仅作为 OCR 检出失败时的兜底；未配置则传 None
+        # （原来这里硬编码 (960,540) = 屏幕中央，点了也点不到按钮）
+        char_button_pos = None
+        if self.config.dungeon:
+            char_button_pos = getattr(self.config.dungeon, 'character_button_pos', None)
 
-        self.logger.info(f"执行角色切换流程，按钮位置: {char_button_pos}")
+        self.logger.info(f"执行角色切换流程，按钮兜底位置: {char_button_pos}")
 
-        # 执行返回角色选择菜单流程（使用OCR检测商店）
+        # 执行返回角色选择菜单流程（OCR 优先定位按钮，其次用上面的兜底位置）
         success = self.character_switcher.execute_return_to_character_selection(
             character_button_position=char_button_pos,
             current_image=image,
@@ -1165,6 +1232,7 @@ class GameEngine:
         )
 
         if success:
+            self._switch_failures = 0
             self.logger.info("角色切换流程完成，准备进入副本")
 
             # 运行自动进图逻辑
@@ -1174,8 +1242,16 @@ class GameEngine:
                 self.logger.success("自动进图完成")
             else:
                 self.logger.error(f"自动进图失败: {enter_result.message}")
-        else:
-            self.logger.error("角色切换流程失败")
+            return
+
+        # 失败：必须把刷图计数清零，否则 should_switch_character() 仍为真，
+        # 下一帧会再次进入这里 —— 切换流程带阻塞 sleep，会变成活锁。
+        self._switch_failures += 1
+        self.logger.error(
+            f"角色切换失败（第 {self._switch_failures} 次），"
+            f"重置刷图计数以免每帧重试；本次继续留在当前角色"
+        )
+        self.context.reset_dungeon_run()
 
     def _character_switch_action(self) -> None:
         """角色切换动作"""
@@ -1245,9 +1321,19 @@ class GameEngine:
         self.context.set_custom_data('need_buff', False)
 
     def _on_enter_menu(self, context) -> None:
-        """进入MENU状态时的回调 - 按Tab键"""
-        self.controller.key_press('tab')
-        self.logger.debug("进入菜单状态：已按Tab键")
+        """
+        进入通关提示（右上角「是否继续?」）时的回调。
+
+        按 gather_key（默认 Tab）**聚集掉落** —— 这是收集掉落，不是推进流程的按键。
+        推进到下一次刷图由 `_menu_action` 按 continue_key（默认 F10 再次挑战）完成。
+        """
+        gather_key = getattr(self.config.dungeon, 'gather_key', 'tab')
+        self.controller.key_press(gather_key)
+
+        # 重置提示推进状态，让 _menu_action 重新计时/重新计数
+        self._prompt_attempts = 0
+        self._prompt_last_press_at = None
+        self.logger.debug(f"进入通关提示：已按 {gather_key} 聚集掉落")
 
     def _on_enter_playing(self, context) -> None:
         """进入PLAYING状态时的回调 - 释放Buff"""

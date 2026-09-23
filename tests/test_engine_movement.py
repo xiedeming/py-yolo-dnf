@@ -88,6 +88,7 @@ def make_engine(context, movement=None):
     attacks = []
     engine = GameEngine.__new__(GameEngine)
     engine.context = context
+    engine.dungeon_flow = None
     engine.movement = movement or RecordingMovement()
     engine.logger = types.SimpleNamespace(
         debug=lambda *_: None, info=lambda *_: None, warning=lambda *_: None
