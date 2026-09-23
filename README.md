@@ -120,11 +120,11 @@ CPU 模式需要从训练机导出的 ONNX 模型：`models/cpu/best_dxc_yolo11n
 
 ```
 ├── src/
-│   ├── core/            # 主引擎、副本运行器、定时调度
+│   ├── core/            # 主引擎、定时调度
 │   ├── capture/         # bettercam(DXGI) / mss 捕获、窗口管理（工厂自动回退）
 │   ├── detection/       # YOLODetector / MultiModelDetector / ONNX 检测器
 │   ├── control/         # 键鼠模拟（贝塞尔曲线、人性化延迟）
-│   ├── decision/        # 状态机、游戏上下文、技能/Buff/导航/翻牌/卡住恢复等
+│   ├── decision/        # 状态机、游戏上下文、技能/Buff/路径规划/翻牌/卡住恢复等
 │   ├── selection/       # 角色/地图选择
 │   ├── debug/           # 可视化调试窗口
 │   └── utils/           # 配置加载、硬件探测、日志

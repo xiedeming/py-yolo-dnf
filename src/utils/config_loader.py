@@ -155,15 +155,6 @@ class DungeonConfig:
 
 
 @dataclass
-class MapRouteConfig:
-    """地图路线配置"""
-    left_doors: List[int] = field(default_factory=list)   # 向左走的房间
-    up_doors: List[int] = field(default_factory=list)     # 向上走的房间
-    boss_room: int = 0                # Boss房间索引
-    total_rooms: int = 10             # 总房间数
-
-
-@dataclass
 class CardFlipConfig:
     """翻牌配置"""
     enabled: bool = True
@@ -351,7 +342,6 @@ class Config:
     side_scroller: SideScrollerConfig = None
     # DNF 专用配置
     dungeon: DungeonConfig = None
-    map_routes: Dict[str, MapRouteConfig] = field(default_factory=dict)
     card_flip: CardFlipConfig = None
     stuck_recovery: StuckRecoveryConfig = None
     schedule: ScheduleConfig = None
@@ -534,9 +524,6 @@ class ConfigLoader:
         if 'dungeon' in data:
             config.dungeon = ConfigLoader._parse_dungeon_config(data['dungeon'])
 
-        if 'map_routes' in data:
-            config.map_routes = ConfigLoader._parse_map_routes_config(data['map_routes'])
-
         if 'card_flip' in data:
             config.card_flip = ConfigLoader._parse_card_flip_config(data['card_flip'])
 
@@ -700,19 +687,6 @@ class ConfigLoader:
             room_clear_frames=data.get('room_clear_frames', 8),
             room_change_motion=data.get('room_change_motion', 25.0),
         )
-
-    @staticmethod
-    def _parse_map_routes_config(data: Dict) -> Dict[str, MapRouteConfig]:
-        """解析地图路线配置"""
-        routes = {}
-        for map_id, route_data in data.items():
-            routes[map_id] = MapRouteConfig(
-                left_doors=route_data.get('left_doors', []),
-                up_doors=route_data.get('up_doors', []),
-                boss_room=route_data.get('boss_room', 0),
-                total_rooms=route_data.get('total_rooms', 10)
-            )
-        return routes
 
     @staticmethod
     def _parse_card_flip_config(data: Dict) -> CardFlipConfig:

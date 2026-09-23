@@ -1,14 +1,13 @@
 # Low-spec CPU profile. Keep the game client at its normal resolution; the
 # detector letterboxes only its input and maps boxes back to client coordinates.
+# 只保留与 settings.yaml 不同的项，其余全部通过 extends 继承。
 extends: settings.yaml
 
 game:
-  window_title: "地下城与勇士：创新世纪"
   target_fps: 10
 
 capture:
-  method: "mss"
-  monitor_index: 1
+  method: "mss"           # requirements-cpu.txt 不含 bettercam，低配固定用 mss
 
 detection:
   backend: onnxruntime
@@ -20,7 +19,6 @@ detection:
       path: models/cpu/best_dxc_yolo11n_416_fp32.onnx
       imgsz: 416
       conf_threshold: 0.10
-      iou_threshold: 0.10
       max_det: 300
       class_names:
         - people
@@ -35,27 +33,10 @@ detection:
         - boss-n
         - boss-m
 
-control:
-  humanize: true
-  mouse_sensitivity: 1.0
-  random_delay_range: [0.02, 0.08]
-
 debug:
   enabled: false
   save_screenshots: false
 
-ocr:
-  enabled: true
-
 dungeon:
-  mode: new_abyss
-  max_runs: 16
-  collect_items: true
-  menu_detect_threshold: 180
-  menu_timeout_seconds: 6
-  character_button_pos: [960, 540]
-
-hotkeys:
-  start: f1
-  pause: f2
-  stop: f3
+  menu_timeout_seconds: 6           # 低配帧率低，超时用真实秒数而非帧计数
+  character_button_pos: [960, 540]  # OCR 检不出「选择角色」按钮时的兜底坐标

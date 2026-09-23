@@ -161,7 +161,8 @@ DXGI 只在画面变化时交付新帧，`BetterCamCapture` 会复用上一帧�
 **切角色只由刷图次数决定**：`dungeon_run_count >= dungeon.max_runs` 时才切换。
 这里原本还有一条「menu 连续检测超时 → 切角色」的路径 —— 但该提示每次通关都会出现，
 只要没被及时关掉就会在 6 秒后误触发切角色（刷图次数根本没到），已移除。
-注意 `dungeon_run_count` 过去只在死代码 `dungeon_runner.py` 里递增，主循环从不计数，
+注意 `dungeon_run_count` 过去只在死代码 `dungeon_runner.py`（连同其消费者 `map_navigator.py`
+与 `map_routes` 配置，已整体删除）里递增，主循环从不计数，
 所以这条触发实际上从未生效；现在由 `_menu_action` 在按继续键时递增。
 
 **「选择角色」按钮定位**：优先用 OCR（`rapidocr`）在当前截图里找「选择角色 / 角色选择」；
@@ -177,7 +178,7 @@ v1 返回 `(result, elapse)`），`src/detection/ocr_detector.py` 对两个版�
 
 ### 地下城（白图）流程
 
-`dungeon.mode` 决定走哪套流程。**注意**：这个字段过去只被死代码 `dungeon_runner.py` 读取，
+`dungeon.mode` 决定走哪套流程。**注意**：这个字段过去只被死代码 `dungeon_runner.py`（已删除）读取，
 主循环是状态机驱动的，所以模式其实一直没生效。
 
 | mode | 行为 |
@@ -228,7 +229,10 @@ from src.decision.game_context import GameState
 
 ### Configuration
 
-配置文件: `config/settings.yaml`
+配置文件: `config/settings.yaml`（高配/CUDA）；`config/settings.cpu.yaml`（低配/CPU）
+**只写与父配置不同的项**，其余通过 `extends: settings.yaml` 深合并继承
+（`ConfigLoader._load_yaml_tree`，有循环检测）。给低配加差异时只写覆盖项，
+不要把父配置已有的值复制过去。
 
 关键字段:
 - `game.window_title`: 游戏窗口标题（支持部分匹配）

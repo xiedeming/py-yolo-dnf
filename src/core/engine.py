@@ -15,7 +15,6 @@ from ..control.movement_controller import MovementController, MoveSpeedModel
 from ..decision.game_context import GameContext, GameState
 from ..decision.state_machine import StateMachine, create_game_state_machine
 from ..decision.skill_manager import SkillManager, SkillQueue, BuffManager
-from ..decision.map_navigator import MapNavigator, create_map_navigator_from_config
 from ..decision.card_flipper import CardFlipper, create_card_flipper_from_config
 from ..decision.stuck_handler import StuckHandler, create_stuck_handler_from_config
 from ..decision.dungeon_flow import DungeonFlow
@@ -85,14 +84,12 @@ class GameEngine:
         self._current_role_config: Optional[Any] = None  # 当前角色配置
 
         # DNF 专用模块
-        self.map_navigator: Optional[MapNavigator] = None
         self.card_flipper: Optional[CardFlipper] = None
         self.stuck_handler: Optional[StuckHandler] = None
         # 地下城（白图）流程：房间推进 + 路径规划。深渊模式下为 None
         self.dungeon_flow: Optional[DungeonFlow] = None
         self.character_switcher: Optional[CharacterSwitcher] = None
         self.multi_char_manager: Optional[MultiCharacterManager] = None
-        self.dungeon_runner = None  # 将在所有模块初始化后创建
         self.scheduler = None
 
         # 初始化组件
@@ -301,14 +298,6 @@ class GameEngine:
                 self.buff_manager.load_buffs(first_role.buff)
                 self.logger.info(f"Buff管理器已初始化: {len(first_role.buff)} 个Buff")
 
-        # 初始化地图导航器
-        if self.config.map_routes:
-            self.map_navigator = create_map_navigator_from_config(
-                self.config.map_routes,
-                self.controller
-            )
-            self.logger.info(f"Map navigator initialized with {len(self.config.map_routes)} routes")
-
         # 初始化翻牌处理器
         if self.config.card_flip and self.config.card_flip.enabled:
             self.card_flipper = create_card_flipper_from_config(
@@ -401,19 +390,6 @@ class GameEngine:
                 planner=create_path_planner(self.config.dungeon.path_planner, region=region),
             )
             self.logger.info(f"地下城流程已启用 (path_planner={self.config.dungeon.path_planner})")
-
-        # 初始化副本运行器
-        from .dungeon_runner import create_dungeon_runner_from_config
-        if self.config.dungeon:
-            dungeon_config = {
-                'mode': self.config.dungeon.mode,
-                'max_runs': self.config.dungeon.max_runs,
-                'auto_sell': self.config.dungeon.auto_sell,
-                'sell_after_runs': self.config.dungeon.sell_after_runs,
-                'collect_items': self.config.dungeon.collect_items
-            }
-            self.dungeon_runner = create_dungeon_runner_from_config(self, dungeon_config)
-            self.logger.info(f"Dungeon runner initialized (mode: {self.config.dungeon.mode})")
 
         # 初始化定时调度器
         if self.config.schedule and self.config.schedule.enabled:

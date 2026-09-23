@@ -65,7 +65,6 @@ def load_engine():
 
     add_module("src", __path__=[])
     add_module("src.core", __path__=[])
-    add_module("src.core.dungeon_runner", create_dungeon_runner_from_config=lambda *args, **kwargs: None)
     # engine.py 通过 create_capture 工厂创建捕获后端，因此这里也要提供该入口
     add_module("src.capture", __path__=[], create_capture=lambda *args, **kwargs: object())
     add_module("src.detection", __path__=[])
@@ -125,7 +124,6 @@ def load_engine():
     add_module("src.decision.game_context", GameContext=object, GameState=_RealGameState)
     add_module("src.decision.state_machine", StateMachine=object, create_game_state_machine=lambda: None)
     add_module("src.decision.skill_manager", SkillManager=object, SkillQueue=FakeQueue, BuffManager=FakeBuffManager)
-    add_module("src.decision.map_navigator", MapNavigator=object, create_map_navigator_from_config=lambda *args: None)
     add_module("src.decision.card_flipper", CardFlipper=object, create_card_flipper_from_config=lambda *args: None)
     add_module("src.decision.stuck_handler", StuckHandler=object, StuckConfig=object, create_stuck_handler_from_config=lambda *args: None)
     add_module("src.decision.dungeon_flow", DungeonFlow=object)
@@ -344,7 +342,6 @@ class GameEngineTests(unittest.TestCase):
             multi_character=types.SimpleNamespace(
                 enabled=True, role_list=[role], start_name="", end_name=""
             ),
-            map_routes=None,
             card_flip=None,
             stuck_recovery=None,
             ocr=None,
@@ -354,7 +351,6 @@ class GameEngineTests(unittest.TestCase):
         engine.skill_manager = types.SimpleNamespace(skill_queue=None)
         engine.skill_queue = None
         engine.buff_manager = None
-        engine.map_navigator = None
         engine.card_flipper = None
         engine.stuck_handler = None
         engine.character_switcher = None
@@ -363,10 +359,7 @@ class GameEngineTests(unittest.TestCase):
         engine.context = types.SimpleNamespace(set_movement_speed=lambda *_: None)
         engine.movement = types.SimpleNamespace(set_speed=lambda **_: None)
 
-        dungeon_runner = types.ModuleType("src.core.dungeon_runner")
-        dungeon_runner.create_dungeon_runner_from_config = lambda *args, **kwargs: None
-        with mock.patch.dict(sys.modules, {"src.core.dungeon_runner": dungeon_runner}):
-            engine._init_dnf_modules()
+        engine._init_dnf_modules()
 
         self.assertIs(engine.skill_manager.skill_queue, engine.skill_queue)
 

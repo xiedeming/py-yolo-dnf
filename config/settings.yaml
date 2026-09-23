@@ -23,19 +23,12 @@ control:
   random_delay_range: [0.02, 0.08]  # 随机延迟范围(秒)
 
 decision:
-  # 状态机配置
-  states:
-    - menu
-    - loading
-    - playing
-    - combat
-    - paused
-    - dead
-    - victory
+  # 状态列表不在配置里维护：状态机用 GameState 枚举硬编码（state_machine.py），
+  # 旧版此处的 states 列表从未被读取。
 
   # 行为配置
   combat:
-    attack_key: "space"        # 攻击按键
+    attack_key: "x"        # 攻击按键
     target_priority: "nearest" # 目标优先级: nearest, weakest, strongest
     skill_strategy: "priority" # 技能策略: priority, cooldown, custom
     use_skills: true           # 是否使用技能
@@ -148,19 +141,6 @@ ocr:
   det_model_dir: ""           # 文本检测模型路径
   rec_model_dir: ""           # 文本识别模型路径
   cls_model_dir: ""           # 文本方向分类模型路径
-
-# 地图路线配置
-map_routes:
-  dungeon_1:
-    left_doors: [2, 5, 8]     # 这些房间向左走
-    up_doors: [3, 6]          # 这些房间向上走
-    boss_room: 10             # Boss房间索引
-    total_rooms: 10           # 总房间数
-  dungeon_2:
-    left_doors: [1, 4, 7]
-    up_doors: [2, 5]
-    boss_room: 9
-    total_rooms: 9
 
 # 翻牌配置
 card_flip:
